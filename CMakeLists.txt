@@ -1,0 +1,62 @@
+cmake_minimum_required(VERSION 4.2.2)
+
+project(idf VERSION 1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 26)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(Protobuf REQUIRED)
+protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS tokens.proto)
+
+add_executable(${PROJECT_NAME} 
+    main.cpp 
+    src/dirtree.hpp 
+    src/extensions.hpp
+    src/tokenizer.hpp
+    src/sharding.hpp
+    ${PROTO_SRCS}
+    ${PROTO_HDRS}
+)
+
+target_compile_options(${PROJECT_NAME} PRIVATE 
+    -O3 -march=native
+)
+
+find_package(HPX REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(URING REQUIRED liburing)
+pkg_check_modules(JEMALLOC REQUIRED jemalloc)
+
+# Try to find Abseil as it's often required by modern Protobuf
+find_package(absl REQUIRED)
+
+target_link_libraries(${PROJECT_NAME}
+    PRIVATE
+    HPX::hpx
+    HPX::wrap_main
+    HPX::iostreams_component
+    ${URING_LIBRARIES}
+    ${JEMALLOC_LIBRARIES}
+    protobuf::libprotobuf
+    absl::log_internal_check_op
+    absl::log_internal_message
+)
+
+target_precompile_headers(${PROJECT_NAME} PRIVATE
+    <hpx/hpx.hpp>
+    <vector>
+    <string>
+    <filesystem>
+    <iostream>
+    <liburing.h>
+    <google/protobuf/io/coded_stream.h>
+    <google/protobuf/io/zero_copy_stream_impl.h>
+    <google/protobuf/arena.h>
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}
+    ${URING_INCLUDE_DIRS}
+    ${JEMALLOC_INCLUDE_DIRS}
+)
