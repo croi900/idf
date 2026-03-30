@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package idf;
+
+message Token {
+    uint64 pos = 1;
+    bytes word = 2;
+}
+
+message FileTokens {
+    string path = 1;
+    uint32 file_idx = 2;
+    repeated Token tokens = 3;
+}

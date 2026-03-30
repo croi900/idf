@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/croi/code/cpp/idf/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

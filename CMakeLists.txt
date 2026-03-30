@@ -16,6 +16,7 @@ add_executable(${PROJECT_NAME}
     src/sharding.hpp
     ${PROTO_SRCS}
     ${PROTO_HDRS}
+        src/file_processor.hpp
 )
 
 target_compile_options(${PROJECT_NAME} PRIVATE 
@@ -40,6 +41,7 @@ target_link_libraries(${PROJECT_NAME}
     protobuf::libprotobuf
     absl::log_internal_check_op
     absl::log_internal_message
+    absl::hash
 )
 
 target_precompile_headers(${PROJECT_NAME} PRIVATE
