@@ -14,8 +14,12 @@
 #include <absl/hash/hash.h>
 #include "tokens.pb.h"
 #include "tokenizer.hpp"
+#include <parallel_hashmap/phmap.h>
 
 namespace idf {
+
+    typedef absl::flat_hash_map<std::string, std::vector<std::pair<size_t, size_t>>> im_shard_map; /// stands for in mem comncat map
+
     namespace google_io = google::protobuf::io;
 
     class ShardManager {
@@ -36,12 +40,15 @@ namespace idf {
             }
         };
 
+
         std::vector<std::unique_ptr<Shard> > shards;
-        size_t num_shards;
 
     public:
+        std::string prefix;
+        size_t num_shards;
         ShardManager(size_t n, const std::string &prefix) : num_shards(n) {
             std::filesystem::create_directories("shards");
+            this->prefix = prefix;
             for (size_t i = 0; i < n; ++i) {
                 auto shard = std::make_unique<Shard>();
                 std::string filename = "shards/" + prefix + "_" + std::to_string(i) + ".bin";
@@ -91,7 +98,37 @@ namespace idf {
                 shard->coded_output->WriteRaw(serialization_buffer.data(), (int) serialization_buffer.size());
             }
         }
+
+        im_shard_map
+        read_tokens(uint32_t shard_idx) {
+            auto& shard = shards[shard_idx];
+            std::string filename = "shards/" + prefix + "_" + std::to_string(shard_idx) + ".bin";
+            int read_fd = open(filename.c_str(), O_RDONLY);
+            if (read_fd == -1) return {};
+            google::protobuf::io::FileInputStream file_input(read_fd);
+            google::protobuf::io::CodedInputStream coded_input(&file_input);
+            idf::FileTokens msg;
+            uint32_t msg_size;
+
+            im_shard_map unique;
+
+            while (coded_input.ReadVarint32(&msg_size)) {
+                auto lim = coded_input.PushLimit(msg_size);
+
+                if (msg.ParseFromCodedStream(&coded_input)) {
+                    auto hash = absl::HashOf(msg.path());
+                    for (const Token & token : msg.tokens()) {
+                        const auto& word = token.word();
+                        auto pos = token.pos();
+                        unique[word].emplace_back(hash, pos);
+                    }
+                }
+                coded_input.PopLimit(lim);
+            }
+
+            return unique;
+        }
     };
-}
+};
 
 #endif

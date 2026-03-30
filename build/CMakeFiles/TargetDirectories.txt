@@ -1,3 +1,0 @@
-/home/croi/code/cpp/idf/build/CMakeFiles/idf.dir
-/home/croi/code/cpp/idf/build/CMakeFiles/edit_cache.dir
-/home/croi/code/cpp/idf/build/CMakeFiles/rebuild_cache.dir

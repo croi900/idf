@@ -59,6 +59,7 @@ target_link_libraries(${PROJECT_NAME}
     protobuf::libprotobuf
     absl::log_internal_check_op
     absl::log_internal_message
+    absl::flat_hash_map
     absl::hash
     duckdb
 )
