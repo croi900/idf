@@ -2,6 +2,22 @@ cmake_minimum_required(VERSION 4.2.2)
 
 project(idf VERSION 1.0 LANGUAGES CXX)
 
+# Detect AVX-512BW support at configure time (inherits -march=native from compiler)
+include(CheckCXXSourceCompiles)
+set(CMAKE_REQUIRED_FLAGS "-march=native")
+check_cxx_source_compiles("
+#ifndef __AVX512BW__
+#  error No AVX512BW
+#endif
+int main() { return 0; }
+" HAVE_AVX512BW)
+unset(CMAKE_REQUIRED_FLAGS)
+if(HAVE_AVX512BW)
+    message(STATUS "[idf] AVX-512BW detected — dual AVX2/AVX-512 tokenizer enabled")
+else()
+    message(STATUS "[idf] AVX-512BW not available — AVX2-only tokenizer")
+endif()
+
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -16,7 +32,7 @@ add_executable(${PROJECT_NAME}
     src/sharding.hpp
     ${PROTO_SRCS}
     ${PROTO_HDRS}
-        src/file_processor.hpp
+    src/file_processor.hpp
 )
 
 target_compile_options(${PROJECT_NAME} PRIVATE 
@@ -25,6 +41,8 @@ target_compile_options(${PROJECT_NAME} PRIVATE
 
 find_package(HPX REQUIRED)
 find_package(PkgConfig REQUIRED)
+find_package(DuckDB CONFIG REQUIRED)
+
 pkg_check_modules(URING REQUIRED liburing)
 pkg_check_modules(JEMALLOC REQUIRED jemalloc)
 
@@ -42,6 +60,7 @@ target_link_libraries(${PROJECT_NAME}
     absl::log_internal_check_op
     absl::log_internal_message
     absl::hash
+    duckdb
 )
 
 target_precompile_headers(${PROJECT_NAME} PRIVATE
