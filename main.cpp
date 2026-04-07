@@ -1,4 +1,4 @@
-#include <hpx/hpx_main.hpp>
+#include <hpx/hpx_init.hpp>
 #include <hpx/include/parallel_for_loop.hpp>
 #include <hpx/include/parallel_for_each.hpp>
 #include <hpx/include/async.hpp>
@@ -22,81 +22,65 @@
 #include "src/file_processor.hpp"
 #include "src/tokenizer.hpp"
 #include "src/sharding.hpp"
+#include "src/db_manager.hpp"
+#include "src/search.h"
 
+idf::im_shard_map global_tokens;
+std::vector<std::string> global_fl;
 
 int main(int argc, char *argv[]) {
     size_t num_hpx_threads = hpx::get_os_thread_count();
     std::cout << "HPX Worker Threads: " << num_hpx_threads << std::endl;
 
-    auto fl = dirtree::file_list("/home/croi/code/cpp/", 16000).to_vector();
-    std::cout << "Found " << fl.size() << " files." << std::endl;
+    global_fl = dirtree::file_list("/", 16000).to_vector();
+    std::cout << "Found " << global_fl.size() << " files." << std::endl;
 
     auto start_time = std::chrono::high_resolution_clock::now();
     idf::ShardManager shard_manager(256, "tokens");
     fp::start_reporter(start_time, fp::CHUNK_SIZE);
 
-    fp::process_file_list(std::move(fl), shard_manager);
-    fp::done = true;
+    fp::process_file_list(global_fl, shard_manager);
+    shard_manager.flush();
 
     auto end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end_time - start_time;
-
     std::cout << "Finished " << fp::files_completed.load() << " files in " << elapsed.count() << "s" << std::endl;
 
+
     start_time = std::chrono::high_resolution_clock::now();
-
-    idf::im_shard_map tokens;
     std::mutex map_mutex;
-
     hpx::for_each(hpx::execution::par,
-        hpx::util::counting_iterator<uint32_t>(0),
-        hpx::util::counting_iterator<uint32_t>(shard_manager.num_shards),
-        [&](uint32_t i) {
-            auto local_shard_data = shard_manager.read_tokens(i);
+                  hpx::util::counting_iterator<uint32_t>(0),
+                  hpx::util::counting_iterator<uint32_t>(shard_manager.num_shards),
+                  [&](uint32_t i) {
+                      auto local_shard_data = shard_manager.read_tokens(i);
+                      std::lock_guard<std::mutex> lock(map_mutex);
+                      for (auto &[word, vec]: local_shard_data) {
+                          auto &dest_vec = global_tokens[word];
+                          dest_vec.insert(dest_vec.end(),
+                                          std::make_move_iterator(vec.begin()),
+                                          std::make_move_iterator(vec.end()));
+                      }
+                  });
 
-            std::lock_guard<std::mutex> lock(map_mutex);
-            for (auto& [word, vec] : local_shard_data) {
-                auto& dest_vec = tokens[word];
-                dest_vec.insert(dest_vec.end(),
-                                std::make_move_iterator(vec.begin()),
-                                std::make_move_iterator(vec.end()));
-            }
-        });
-
-    //
-    // absl::flat_hash_map<std::string, std::vector<std::pair<size_t, size_t>>> tokens;
-    //
-    // // Optional: If you know roughly how many unique words there are,
-    // // reserving space here will prevent expensive re-hashes.
-    // // tokens.reserve(1000000);
-    //
-    // for (uint32_t i = 0; i < shard_manager.num_shards; ++i) {
-    //     // 1. Get the data from one shard
-    //     auto shard_data = shard_manager.read_tokens(i);
-    //
-    //     // 2. Insert directly into the final map
-    //     for (auto& [word, vec] : shard_data) {
-    //         auto& dest_vec = tokens[word];
-    //
-    //         // 3. Move the data to avoid copies
-    //         dest_vec.insert(dest_vec.end(),
-    //                         std::make_move_iterator(vec.begin()),
-    //                         std::make_move_iterator(vec.end()));
-    //     }
-    // }
     end_time = std::chrono::high_resolution_clock::now();
+    std::cout << "Concatenation done in: "
+            << static_cast<std::chrono::duration<double>>(end_time - start_time).count()
+            << "s" << std::endl;
+    std::cout << global_tokens.size() << std::endl;
+    idf::serialize_processed_tokens(global_tokens, "tokens_processed.pb.bin");
+    // idf::delete_shards(shard_manager);
 
-    std::cout   << "Concatenation done in: "
-                << static_cast<std::chrono::duration<double>>(end_time - start_time).count()
-                << "s" << std::endl;
 
+    duckdb::DuckDB db("idf.duckdb");
+    idf::load_into_duckdb(db, global_tokens, global_fl);
 
-    // for (auto it = tokens.begin(); it != tokens.end(); ++it) {
-    //     std::cout << it->first << " -> " ;
-    //     for (auto & elem : it->second) {
-    //         std::cout << '(' << elem.first << " | " << elem.second  << ") " <<  std::endl;
-    //     }
-    //     std::cout << std::endl;
-    // }
+    duckdb::Connection con(db);
+
+    idf::search::Query q((std::move(con)), "int");
+    q.execute();
+    for (auto &e: q.path_result) {
+        printf("%s\n", e.c_str());
+    }
     return 0;
 }

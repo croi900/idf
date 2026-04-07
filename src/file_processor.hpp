@@ -30,13 +30,13 @@
 #include "src/reporter.hpp"
 
 namespace fp {
-    constexpr size_t CHUNK_SIZE = 4 * 1024 * 1024;
-    constexpr size_t MAX_ACTIVE_CHUNKS = 2000;
+    constexpr size_t CHUNK_SIZE = 1 * 1024 * 1024;
+    constexpr size_t MAX_ACTIVE_CHUNKS = 50000;
 
 
 
 
-    inline void process_file_list(std::vector<std::string>&& fl, idf::ShardManager& shard_manager) {
+    inline void process_file_list(const std::vector<std::string>& fl, idf::ShardManager& shard_manager) {
         hpx::counting_semaphore<MAX_ACTIVE_CHUNKS> semaphore(MAX_ACTIVE_CHUNKS);
         hpx::experimental::task_group tg;
 
@@ -67,6 +67,7 @@ namespace fp {
                     void* addr = mmap(nullptr, size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
                     close(fd);
                     if (addr == MAP_FAILED) {
+                        std::cout << "Memroy allocation failed for " << path << ", size: " << size << std::endl;
                         files_completed.fetch_add(1, std::memory_order_relaxed);
                         return;
                     }
@@ -78,12 +79,15 @@ namespace fp {
                     tg.run([&shard_manager, &semaphore, i, path, size, addr]() {
                         std::string_view view(static_cast<char*>(addr), size);
                         auto tokens = idf::tokenize_chunk(view, 0);
+
                         shard_manager.write_tokens(i, path, tokens);
                         munmap(addr, size);
                         chunks_completed.fetch_add(1, std::memory_order_relaxed);
                         active_chunks.fetch_sub(1, std::memory_order_relaxed);
                         semaphore.release();
                     });
+
+
 
                 } else {
 

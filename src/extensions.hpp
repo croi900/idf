@@ -7,9 +7,8 @@
 
 namespace dirtree {
 
-
-
     inline constexpr std::array text_extensions = {
+        std::string_view{".hpp"},
         std::string_view{".as"},
         std::string_view{".asc"},
         std::string_view{".asm"},

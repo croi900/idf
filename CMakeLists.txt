@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 4.2.2)
 
 project(idf VERSION 1.0 LANGUAGES CXX)
 
-# Detect AVX-512BW support at configure time (inherits -march=native from compiler)
 include(CheckCXXSourceCompiles)
 set(CMAKE_REQUIRED_FLAGS "-march=native")
 check_cxx_source_compiles("
@@ -22,7 +21,11 @@ set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Protobuf REQUIRED)
-protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS tokens.proto)
+protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS
+    tokens.proto
+    tokens_processed.proto
+)
+
 
 add_executable(${PROJECT_NAME} 
     main.cpp 
@@ -30,9 +33,11 @@ add_executable(${PROJECT_NAME}
     src/extensions.hpp
     src/tokenizer.hpp
     src/sharding.hpp
+    src/db_manager.hpp
     ${PROTO_SRCS}
     ${PROTO_HDRS}
     src/file_processor.hpp
+    src/search.h
 )
 
 target_compile_options(${PROJECT_NAME} PRIVATE 
@@ -46,7 +51,6 @@ find_package(DuckDB CONFIG REQUIRED)
 pkg_check_modules(URING REQUIRED liburing)
 pkg_check_modules(JEMALLOC REQUIRED jemalloc)
 
-# Try to find Abseil as it's often required by modern Protobuf
 find_package(absl REQUIRED)
 
 target_link_libraries(${PROJECT_NAME}

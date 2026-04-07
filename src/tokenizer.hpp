@@ -4,28 +4,34 @@
 #include <vector>
 #include "token_types.hpp"
 #include "simd_tok.h"
+#include <stringzilla/stringzilla.hpp>
 
 namespace idf {
+
     inline std::vector<TokenInfo> tokenize_chunk(std::string_view content, uint64_t base_offset) {
+        namespace sz = ashvardanian::stringzilla;
+        sz::string_view view = content;
         std::vector<TokenInfo> tokens;
         tokens.reserve(content.size() / 8);
+        sz::string_view delimiters = " \t\n\r\f\v";
+        size_t start = 0;
+        while (start < view.size()) {
+            size_t end = view.find_first_of(delimiters, start);
 
-#ifdef __AVX512BW__
+            if (end == std::string_view::npos) {
+                tokens.push_back({start, view.substr(start)});
+                break;
+            }
 
+            if (end > start) {
+                tokens.push_back({start, view.substr(start, end - start)});
+            }
 
-
-        static const bool have_avx512bw = __builtin_cpu_supports("avx512bw");
-        if (have_avx512bw) {
-            tokenize_simd_avx512(content, base_offset, tokens);
-        } else {
-            tokenize_simd_avx2(content, base_offset, tokens);
+            start = end + 1;
         }
-#else
-        tokenize_simd_avx2(content, base_offset, tokens);
-#endif
+
 
         return tokens;
     }
 }
-
 #endif

@@ -1,6 +1,6 @@
-//
 
-//
+
+
 
 #ifndef IDF_REPORTER_HPP
 #define IDF_REPORTER_HPP
@@ -46,4 +46,4 @@ namespace fp {
     }
 }
 
-#endif //IDF_REPORTER_HPP
+#endif

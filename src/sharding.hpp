@@ -18,7 +18,7 @@
 
 namespace idf {
 
-    typedef absl::flat_hash_map<std::string, std::vector<std::pair<size_t, size_t>>> im_shard_map; /// stands for in mem comncat map
+    typedef absl::flat_hash_map<std::string, std::vector<std::pair<size_t, size_t>>> im_shard_map;
 
     namespace google_io = google::protobuf::io;
 
@@ -62,6 +62,7 @@ namespace idf {
         }
 
         void write_tokens(uint32_t file_idx, const std::string &path, const std::vector<TokenInfo> &tokens) {
+
             if (tokens.empty()) return;
 
 
@@ -97,11 +98,23 @@ namespace idf {
             if (shard->coded_output) {
                 shard->coded_output->WriteRaw(serialization_buffer.data(), (int) serialization_buffer.size());
             }
+
+        }
+
+        void flush() {
+            for (auto &shard : shards) {
+                std::lock_guard<hpx::mutex> lock(shard->mtx);
+                if (shard->coded_output) {
+                    shard->coded_output->Trim();
+                }
+                if (shard->file_stream) {
+                    shard->file_stream->Flush();
+                }
+            }
         }
 
         im_shard_map
         read_tokens(uint32_t shard_idx) {
-            auto& shard = shards[shard_idx];
             std::string filename = "shards/" + prefix + "_" + std::to_string(shard_idx) + ".bin";
             int read_fd = open(filename.c_str(), O_RDONLY);
             if (read_fd == -1) return {};
@@ -114,7 +127,7 @@ namespace idf {
 
             while (coded_input.ReadVarint32(&msg_size)) {
                 auto lim = coded_input.PushLimit(msg_size);
-
+                msg.Clear();
                 if (msg.ParseFromCodedStream(&coded_input)) {
                     auto hash = absl::HashOf(msg.path());
                     for (const Token & token : msg.tokens()) {
