@@ -30,8 +30,8 @@
 #include "src/reporter.hpp"
 
 namespace fp {
-    constexpr size_t CHUNK_SIZE = 1 * 1024 * 1024;
-    constexpr size_t MAX_ACTIVE_CHUNKS = 50000;
+    constexpr size_t CHUNK_SIZE = 1024;//512 * 1024 * 1024;
+    constexpr size_t MAX_ACTIVE_CHUNKS = 10240;
 
 
 
@@ -67,7 +67,7 @@ namespace fp {
                     void* addr = mmap(nullptr, size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
                     close(fd);
                     if (addr == MAP_FAILED) {
-                        std::cout << "Memroy allocation failed for " << path << ", size: " << size << std::endl;
+                        // std::cout << "Memroy allocation failed for " << path << ", size: " << size << std::endl;
                         files_completed.fetch_add(1, std::memory_order_relaxed);
                         return;
                     }
@@ -110,9 +110,7 @@ namespace fp {
                         active_chunks.fetch_add(1, std::memory_order_relaxed);
 
                         size_t end = std::min(offset + CHUNK_SIZE, size);
-                        if (end < size) {
-                            while (end < size && !std::isspace(mmap_ptr.get()[end])) end++;
-                        }
+                        
 
                         size_t current_chunk_size = end - offset;
                         tg.run([&shard_manager, &semaphore, i, path, offset, current_chunk_size, mmap_ptr]() {
