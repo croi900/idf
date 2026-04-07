@@ -18,69 +18,44 @@
 #include <sys/stat.h>
 #include <memory>
 
+#include "src/actions.h"
+#include "src/cli.h"
 #include "src/dirtree.hpp"
 #include "src/file_processor.hpp"
 #include "src/tokenizer.hpp"
 #include "src/sharding.hpp"
 #include "src/db_manager.hpp"
+#include "src/gui.h"
+#include "src/index.h"
 #include "src/search.h"
 
-idf::im_shard_map global_tokens;
-std::vector<std::string> global_fl;
 
 int main(int argc, char *argv[]) {
-    size_t num_hpx_threads = hpx::get_os_thread_count();
-    std::cout << "HPX Worker Threads: " << num_hpx_threads << std::endl;
 
-    global_fl = dirtree::file_list("/", 16000).to_vector();
-    std::cout << "Found " << global_fl.size() << " files." << std::endl;
+    int selection;
+    std::cout << "Please select what you want to do:\n";
+    std::cout << "0: Reindex DB\n";
+    std::cout << "1: CLI\n";
+    std::cout << "2: GUI\n";
 
-    auto start_time = std::chrono::high_resolution_clock::now();
-    idf::ShardManager shard_manager(256, "tokens");
-    fp::start_reporter(start_time, fp::CHUNK_SIZE);
-
-    fp::process_file_list(global_fl, shard_manager);
-    shard_manager.flush();
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed = end_time - start_time;
-    std::cout << "Finished " << fp::files_completed.load() << " files in " << elapsed.count() << "s" << std::endl;
-
-
-    start_time = std::chrono::high_resolution_clock::now();
-    std::mutex map_mutex;
-    hpx::for_each(hpx::execution::par,
-                  hpx::util::counting_iterator<uint32_t>(0),
-                  hpx::util::counting_iterator<uint32_t>(shard_manager.num_shards),
-                  [&](uint32_t i) {
-                      auto local_shard_data = shard_manager.read_tokens(i);
-                      std::lock_guard<std::mutex> lock(map_mutex);
-                      for (auto &[word, vec]: local_shard_data) {
-                          auto &dest_vec = global_tokens[word];
-                          dest_vec.insert(dest_vec.end(),
-                                          std::make_move_iterator(vec.begin()),
-                                          std::make_move_iterator(vec.end()));
-                      }
-                  });
-
-    end_time = std::chrono::high_resolution_clock::now();
-    std::cout << "Concatenation done in: "
-            << static_cast<std::chrono::duration<double>>(end_time - start_time).count()
-            << "s" << std::endl;
-    std::cout << global_tokens.size() << std::endl;
-    idf::serialize_processed_tokens(global_tokens, "tokens_processed.pb.bin");
-    // idf::delete_shards(shard_manager);
-
-
-    duckdb::DuckDB db("idf.duckdb");
-    idf::load_into_duckdb(db, global_tokens, global_fl);
-
-    duckdb::Connection con(db);
-
-    idf::search::Query q((std::move(con)), "int");
-    q.execute();
-    for (auto &e: q.path_result) {
-        printf("%s\n", e.c_str());
+    std::cin >> selection;
+    idf::action action = static_cast<idf::action>(selection);
+    idf::cli();
+    switch (action) {
+        case idf::action::reindex:
+            idf::reindex_db();
+            break;
+        case idf::action::cli:
+            idf::cli();
+            break;
+        case idf::action::interface:
+            idf::gui();
+        default:
+            break;
     }
+
+
+
+
     return 0;
 }

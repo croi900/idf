@@ -1,9 +1,9 @@
 #ifndef SHARDING_HPP
 #define SHARDING_HPP
 
+#include <mutex>
 #include <string>
 #include <vector>
-#include <hpx/mutex.hpp>
 #include <memory>
 #include <filesystem>
 #include <fcntl.h>

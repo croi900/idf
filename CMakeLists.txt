@@ -38,6 +38,10 @@ add_executable(${PROJECT_NAME}
     ${PROTO_HDRS}
     src/file_processor.hpp
     src/search.h
+        src/index.h
+        src/actions.h
+        src/cli.h
+        src/gui.h
 )
 
 target_compile_options(${PROJECT_NAME} PRIVATE 
@@ -86,3 +90,4 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${URING_INCLUDE_DIRS}
     ${JEMALLOC_INCLUDE_DIRS}
 )
+

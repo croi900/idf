@@ -1,5 +1,3 @@
-
-
 #ifndef IDF_FILE_PROCESSOR_HPP
 #define IDF_FILE_PROCESSOR_HPP
 
@@ -23,6 +21,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <memory>
+#include <fast_io.h>
 
 #include "src/dirtree.hpp"
 #include "src/tokenizer.hpp"
@@ -30,107 +29,76 @@
 #include "src/reporter.hpp"
 
 namespace fp {
-    constexpr size_t CHUNK_SIZE = 1024;//512 * 1024 * 1024;
-    constexpr size_t MAX_ACTIVE_CHUNKS = 10240;
+    constexpr size_t CHUNK_SIZE =32 * 1024 * 1024;
+    constexpr size_t MAX_ACTIVE_CHUNKS = 1024;
 
 
+    inline void process_file_list(const std::vector<std::string> &fl, idf::ShardManager &shard_manager) {
+
+        namespace sz = ashvardanian::stringzilla;
 
 
-    inline void process_file_list(const std::vector<std::string>& fl, idf::ShardManager& shard_manager) {
         hpx::counting_semaphore<MAX_ACTIVE_CHUNKS> semaphore(MAX_ACTIVE_CHUNKS);
-        hpx::experimental::task_group tg;
 
+
+
+        hpx::experimental::task_group tg;
         hpx::for_each(
-            hpx::execution::par.with(hpx::execution::static_chunk_size(1)),
+            hpx::execution::par.with(hpx::execution::experimental::adaptive_static_chunk_size()),
             hpx::util::counting_iterator<uint32_t>(0),
             hpx::util::counting_iterator<uint32_t>(fl.size()),
             [&](uint32_t i) {
-                const std::string& path = fl[i];
-                int fd = open(path.c_str(), O_RDONLY);
-                if (fd == -1) {
+                const std::string &path = fl[i];
+
+                fast_io::native_file_loader loader(path);
+                if (loader.size() == 0) {
                     files_completed.fetch_add(1, std::memory_order_relaxed);
                     return;
                 }
 
-                struct stat st;
-                if (fstat(fd, &st) == -1 || st.st_size == 0) {
-                    close(fd);
-                    files_completed.fetch_add(1, std::memory_order_relaxed);
-                    return;
-                }
+                auto shared_loader = std::make_shared<fast_io::native_file_loader>(std::move(loader));
 
-                size_t size = st.st_size;
+                const char *data_ptr = shared_loader->address_begin;
+                size_t total_size = shared_loader->size();
+                size_t offset = 0;
 
-                if (size <= CHUNK_SIZE) {
-
-
-                    void* addr = mmap(nullptr, size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
-                    close(fd);
-                    if (addr == MAP_FAILED) {
-                        // std::cout << "Memroy allocation failed for " << path << ", size: " << size << std::endl;
-                        files_completed.fetch_add(1, std::memory_order_relaxed);
-                        return;
-                    }
-
+                while (offset < total_size) {
                     semaphore.acquire();
                     active_chunks.fetch_add(1, std::memory_order_relaxed);
 
+                    size_t end = std::min(offset + CHUNK_SIZE, total_size);
 
-                    tg.run([&shard_manager, &semaphore, i, path, size, addr]() {
-                        std::string_view view(static_cast<char*>(addr), size);
-                        auto tokens = idf::tokenize_chunk(view, 0);
+                    if (end < total_size) {
+                        sz::string_view tail(data_ptr + end, total_size - end);
 
-                        shard_manager.write_tokens(i, path, tokens);
-                        munmap(addr, size);
-                        chunks_completed.fetch_add(1, std::memory_order_relaxed);
-                        active_chunks.fetch_sub(1, std::memory_order_relaxed);
+                        auto pos = tail.find_first_of(" \n\r\t");
+
+                        if (pos != sz::string_view::npos) {
+                            end += pos;
+                        } else {
+                            end = total_size;
+                        }
+                    }
+
+                    size_t current_chunk_size = end - offset;
+
+                    tg.run([ &semaphore, i, path, offset, current_chunk_size, shared_loader, &shard_manager]() {
+                        std::string_view view(reinterpret_cast<const char *>(shared_loader->address_begin) + offset,
+                                              current_chunk_size);
+
+                        auto tokens = idf::tokenize_chunk(view, offset);
+                        shard_manager.write_tokens(i,path,tokens);
                         semaphore.release();
+                        active_chunks.fetch_sub(1, std::memory_order_relaxed);
                     });
 
-
-
-                } else {
-
-
-                    void* addr = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
-                    close(fd);
-                    if (addr == MAP_FAILED) {
-                        files_completed.fetch_add(1, std::memory_order_relaxed);
-                        return;
-                    }
-
-                    madvise(addr, size, MADV_SEQUENTIAL | MADV_HUGEPAGE);
-
-                    auto mmap_ptr = std::shared_ptr<char>(
-                        static_cast<char*>(addr), [size](char* p) { munmap(p, size); });
-
-                    size_t offset = 0;
-                    while (offset < size) {
-                        semaphore.acquire();
-                        active_chunks.fetch_add(1, std::memory_order_relaxed);
-
-                        size_t end = std::min(offset + CHUNK_SIZE, size);
-                        
-
-                        size_t current_chunk_size = end - offset;
-                        tg.run([&shard_manager, &semaphore, i, path, offset, current_chunk_size, mmap_ptr]() {
-                            std::string_view view(mmap_ptr.get() + offset, current_chunk_size);
-                            auto tokens = idf::tokenize_chunk(view, offset);
-                            shard_manager.write_tokens(i, path, tokens);
-                            chunks_completed.fetch_add(1, std::memory_order_relaxed);
-                            active_chunks.fetch_sub(1, std::memory_order_relaxed);
-                            semaphore.release();
-                        });
-                        offset = end;
-                    }
+                    offset = end;
                 }
                 files_completed.fetch_add(1, std::memory_order_relaxed);
             });
 
-
-
-
         tg.wait();
+
     }
 }
 

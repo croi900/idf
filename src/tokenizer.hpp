@@ -12,24 +12,15 @@ namespace idf {
         namespace sz = ashvardanian::stringzilla;
         sz::string_view view = content;
         std::vector<TokenInfo> tokens;
-        tokens.reserve(content.size() / 8);
-        sz::string_view delimiters = " \t\n\r\f\v";
-        size_t start = 0;
-        while (start < view.size()) {
-            size_t end = view.find_first_of(delimiters, start);
 
-            if (end == std::string_view::npos) {
-                tokens.push_back({start, view.substr(start)});
-                break;
-            }
+        tokens.reserve(content.size() / 6);
 
-            if (end > start) {
-                tokens.push_back({start, view.substr(start, end - start)});
-            }
+        for (auto word : view.split(sz::byteset({' ','\n','\r','\f','\v'}))) {
+            if (word.empty()) continue;
 
-            start = end + 1;
+            size_t offset = word.data() - content.data();
+            tokens.push_back({base_offset + offset, word});
         }
-
 
         return tokens;
     }

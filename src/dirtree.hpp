@@ -73,7 +73,7 @@ namespace dirtree {
 
 
             hpx::sort(hpx::execution::par, sized_files.begin(), sized_files.end(),
-                      [](const auto& a, const auto& b) { return a.first > b.first; });
+                      [](const auto& a, const auto& b) { return a.first < b.first; });
 
             std::vector<std::string> result;
             result.reserve(total_files);

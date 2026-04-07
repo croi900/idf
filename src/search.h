@@ -19,7 +19,8 @@ public:
     std::vector<std::string> path_result;
 
     Query(duckdb::Connection&& conn, const std::string& query)
-        : con(std::move(conn)), query(query) {};
+        : con(std::move(conn)), query(query) {}
+
 
     Query& execute() {
         path_result.clear();
@@ -36,7 +37,7 @@ public:
 
         
         
-        std::string sql = "SELECT DISTINCT f.path FROM idf.main.files f ";
+        std::string sql = "SELECT f.path FROM idf.main.files f ";
         std::string joins = "";
         std::string filters = " WHERE ";
 
@@ -53,11 +54,11 @@ public:
 
             
             if (i > 0) {
-                filters += " AND o" + idx + ".\"position\" = o" + std::to_string(i - 1) + ".\"position\" + 1";
+                filters += " AND o" + idx + ".\"position\" > o" + std::to_string(i - 1) + ".\"position\"";
             }
         }
 
-        std::string final_query = sql + joins + filters + " LIMIT 100;";
+        std::string final_query = sql + joins + filters + ";";
 
         
         auto result = con.Query(final_query);
