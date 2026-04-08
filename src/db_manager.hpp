@@ -262,7 +262,7 @@ namespace idf {
                     for (size_t i = start; i < end; ++i) {
                         const auto &entry = file_list[i];
                         local_app_files.BeginRow();
-                        local_app_files.Append((uint64_t) absl::HashOf(entry.path));
+                        local_app_files.Append((uint64_t) std::hash<std::string>{}(entry.path));
                         local_app_files.Append(duckdb::Value(entry.path));
                         local_app_files.Append((uint64_t) entry.size);
                         local_app_files.Append((uint64_t) entry.mtime);

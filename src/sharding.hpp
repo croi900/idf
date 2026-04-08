@@ -66,7 +66,7 @@ namespace idf {
             if (tokens.empty()) return;
 
 
-            size_t shard_idx = absl::HashOf(path) % num_shards;
+            size_t shard_idx = std::hash<std::string>{}(path) % num_shards;
             auto &shard = shards[shard_idx];
 
 
@@ -129,7 +129,7 @@ namespace idf {
                 auto lim = coded_input.PushLimit(msg_size);
                 msg.Clear();
                 if (msg.ParseFromCodedStream(&coded_input)) {
-                    auto hash = absl::HashOf(msg.path());
+                    auto hash = std::hash<std::string>{}(msg.path());
                     for (const Token & token : msg.tokens()) {
                         const auto& word = token.word();
                         auto pos = token.pos();

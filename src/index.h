@@ -94,14 +94,14 @@ namespace idf {
         std::cout << "Found " << global_fl.size() << " files." << std::endl;
 
         duckdb::DuckDB db("idf.duckdb");
-        auto existing_mtimes = idf::get_existing_mtimes(db, idf::config::root_path);
+        auto existing_mtimes =    idf::get_existing_mtimes(db, idf::config::root_path);
         uint64_t start_token_id = idf::get_next_token_id(db);
 
         std::vector<dirtree::FileEntry> files_to_process;
         std::vector<uint64_t> hashes_to_delete;
         
         for (const auto& f : global_fl) {
-            uint64_t file_hash = absl::HashOf(f.path);
+            uint64_t file_hash = std::hash<std::string>{}(f.path);
             auto it = existing_mtimes.find(file_hash);
             if (it != existing_mtimes.end()) {
                 if (f.mtime > it->second) {
