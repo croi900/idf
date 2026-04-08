@@ -40,53 +40,61 @@ namespace idf {
     idf::im_shard_map global_tokens;
     std::vector<dirtree::FileEntry> global_fl;
     
-    void reindex_db() {
+    void reindex_db(bool skip_prompts = false) {
         auto run_start_time = std::chrono::system_clock::now();
         std::time_t unix_time = std::chrono::system_clock::to_time_t(run_start_time);
         
-        std::string input;
-        
-        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        if (!skip_prompts) {
+            std::string input;
+            
+            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
-        std::cout << "Root path (default '" << idf::config::root_path << "'): ";
-        std::getline(std::cin, input);
-        if (!input.empty()) idf::config::root_path = input;
+            std::cout << "Root path (default '" << idf::config::root_path << "'): ";
+            std::getline(std::cin, input);
+            if (!input.empty()) idf::config::root_path = input;
 
-        size_t default_workers = hpx::get_os_thread_count();
-        std::cout << "Number of workers (default " << default_workers << "): ";
-        std::getline(std::cin, input);
-        if (!input.empty()) idf::config::num_workers = std::stoull(input);
-        else idf::config::num_workers = default_workers;
+            size_t default_workers = hpx::get_os_thread_count();
+            std::cout << "Number of workers (default " << default_workers << "): ";
+            std::getline(std::cin, input);
+            if (!input.empty()) idf::config::num_workers = std::stoull(input);
+            else idf::config::num_workers = default_workers;
 
-        std::cout << "Chunk size (default " << idf::config::chunk_size << "): ";
-        std::getline(std::cin, input);
-        if (!input.empty()) idf::config::chunk_size = std::stoull(input);
+            std::cout << "Chunk size (default " << idf::config::chunk_size << "): ";
+            std::getline(std::cin, input);
+            if (!input.empty()) idf::config::chunk_size = std::stoull(input);
 
-        std::cout << "Max active chunks (default " << idf::config::max_active_chunks << "): ";
-        std::getline(std::cin, input);
-        if (!input.empty()) idf::config::max_active_chunks = std::stoull(input);
+            std::cout << "Max active chunks (default " << idf::config::max_active_chunks << "): ";
+            std::getline(std::cin, input);
+            if (!input.empty()) idf::config::max_active_chunks = std::stoull(input);
 
-        std::cout << "Allowed extensions space separated: ";
-        std::getline(std::cin, input);
-        if (!input.empty()) {
-            idf::config::allowed_extensions.clear();
-            std::stringstream ss(input);
-            std::string ext;
-            while (ss >> ext) idf::config::allowed_extensions.push_back(ext);
+            std::cout << "Allowed extensions space separated: ";
+            std::getline(std::cin, input);
+            if (!input.empty()) {
+                idf::config::allowed_extensions.clear();
+                std::stringstream ss(input);
+                std::string ext;
+                while (ss >> ext) idf::config::allowed_extensions.push_back(ext);
+            }
+
+            std::cout << "Number of shards (default " << idf::config::num_shards << "): ";
+            std::getline(std::cin, input);
+            if (!input.empty()) idf::config::num_shards = std::stoull(input);
+        } else {
+            if (idf::config::num_workers == 0) {
+                idf::config::num_workers = hpx::get_os_thread_count();
+            }
         }
 
-        std::cout << "Number of shards (default " << idf::config::num_shards << "): ";
-        std::getline(std::cin, input);
-        if (!input.empty()) idf::config::num_shards = std::stoull(input);
-
         std::cout << "HPX Worker Threads: " << idf::config::num_workers << std::endl;
+
+        idf::config::root_path = std::filesystem::absolute(idf::config::root_path).lexically_normal().string();
 
         global_fl = dirtree::file_list(idf::config::root_path, 16000).to_vector();
 
         std::cout << "Found " << global_fl.size() << " files." << std::endl;
 
         duckdb::DuckDB db("idf.duckdb");
-        auto existing_mtimes = idf::get_existing_mtimes(db);
+        auto existing_mtimes = idf::get_existing_mtimes(db, idf::config::root_path);
         uint64_t start_token_id = idf::get_next_token_id(db);
 
         std::vector<dirtree::FileEntry> files_to_process;

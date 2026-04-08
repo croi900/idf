@@ -81,22 +81,26 @@ namespace idf {
     }
 
 
-    inline std::map<uint64_t, uint64_t> get_existing_mtimes(duckdb::DuckDB &db) {
+    inline std::unordered_map<uint64_t, uint64_t> get_existing_mtimes(duckdb::DuckDB& db, const std::string& prefix) {
         duckdb::Connection con(db);
-        std::map<uint64_t, uint64_t> mtimes;
-        auto res = con.Query("SELECT hash, mtime FROM files;");
+        std::unordered_map<uint64_t, uint64_t> mtimes;
+        
+        auto res = con.Query("SELECT hash, mtime, path FROM files;");
         if (res->HasError()) {
             con.Query("ALTER TABLE files ADD COLUMN mtime UBIGINT DEFAULT 0;");
             con.Query("ALTER TABLE files ADD COLUMN size UBIGINT DEFAULT 0;");
             con.Query("ALTER TABLE files ADD COLUMN inode UBIGINT DEFAULT 0;");
             con.Query("ALTER TABLE files ADD COLUMN dev UBIGINT DEFAULT 0;");
-            res = con.Query("SELECT hash, mtime FROM files;");
+            res = con.Query("SELECT hash, mtime, path FROM files;");
             if (res->HasError()) return mtimes;
         }
 
         auto& m_res = static_cast<duckdb::MaterializedQueryResult&>(*res);
         for (duckdb::idx_t i = 0; i < m_res.RowCount(); ++i) {
-            mtimes[m_res.GetValue(0, i).GetValue<uint64_t>()] = m_res.GetValue(1, i).GetValue<uint64_t>();
+            std::string path = m_res.GetValue(2, i).GetValue<std::string>();
+            if (path.rfind(prefix, 0) == 0 || prefix.rfind(path, 0) == 0 || path.front() == '.') {
+                mtimes[m_res.GetValue(0, i).GetValue<uint64_t>()] = m_res.GetValue(1, i).GetValue<uint64_t>();
+            }
         }
         return mtimes;
     }

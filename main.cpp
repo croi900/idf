@@ -20,6 +20,7 @@
 
 #include "src/actions.h"
 #include "src/cli.h"
+#include "src/gui.h"
 #include "src/dirtree.hpp"
 #include "src/file_processor.hpp"
 #include "src/tokenizer.hpp"

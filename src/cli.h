@@ -8,6 +8,7 @@
 #include <duckdb/main/connection.hpp>
 #include <duckdb/main/database.hpp>
 
+#include <algorithm>
 #include "search.h"
 
 namespace idf {
@@ -33,18 +34,42 @@ namespace idf {
 
             duckdb::Connection con(db);
 
-            idf::search::Query q(std::move(con), query, is_phrase);
-            q.execute([&](const idf::search::SearchResult& res) {
-                std::string snip = res.snippet;
-                for (const auto& wd : words) {
-                    size_t pos = 0;
-                    while ((pos = snip.find(wd, pos)) != std::string::npos) {
-                        snip.replace(pos, wd.length(), "\x1b[32m" + wd + "\x1b[0m");
-                        pos += 9 + wd.length();
+            try {
+                idf::search::Query q(std::move(con), query, is_phrase);
+                size_t count = 0;
+                q.execute([&](const idf::search::SearchResult& res) {
+                    if (++count > 100) return false;
+                    std::string snip = res.snippet;
+                    std::vector<std::pair<size_t, size_t>> intervals;
+                    for (const auto& wd : words) {
+                        size_t pos = 0;
+                        while ((pos = snip.find(wd, pos)) != std::string::npos) {
+                            intervals.push_back({pos, pos + wd.length()});
+                            pos += wd.length();
+                        }
                     }
-                }
-                std::cout << "\x1b[36m" << res.path << "\x1b[0m\n" << snip << "\n\n";
-            });
+                    if (!intervals.empty()) {
+                        std::sort(intervals.begin(), intervals.end());
+                        std::vector<std::pair<size_t, size_t>> merged;
+                        for (auto& iv : intervals) {
+                            if (merged.empty() || merged.back().second < iv.first) {
+                                merged.push_back(iv);
+                            } else {
+                                merged.back().second = std::max(merged.back().second, iv.second);
+                            }
+                        }
+                        for (auto it = merged.rbegin(); it != merged.rend(); ++it) {
+                            snip.insert(it->second, "\x1b[0m");
+                            snip.insert(it->first, "\x1b[32m");
+                        }
+                    }
+                    
+                    std::cout << "\x1b[36m" << res.path << "\x1b[0m\n" << snip << "\n\n";
+                    return true;
+                });
+            } catch (const std::exception& e) {
+                std::cerr << "Error: " << e.what() << std::endl;
+            }
         }
     }
 }

@@ -39,7 +39,7 @@ public:
 
         if (words.empty()) return false;
 
-        std::string sql = "SELECT f.path, o0.position FROM main.files f ";
+        std::string sql = "SELECT f.path, o0.position, o" + std::to_string(words.size() - 1) + ".position FROM main.files f ";
         std::string joins = "";
         std::string filters = " WHERE ";
 
@@ -55,12 +55,10 @@ public:
             if (i > 0) {
                 if (is_phrase_mode) {
                     filters += " AND o" + idx + ".\"position\" > o" + std::to_string(i - 1) + ".\"position\"";
-
-                    filters += " AND o" + idx + ".\"position\" - o" +  std::to_string(i - 1) + ".\"position\" < 256";
+                    filters += " AND o" + idx + ".\"position\" - o" +  std::to_string(i - 1) + ".\"position\" < 128";
                 } else {
-
                     filters += " AND o" + idx + ".\"position\" > o" + std::to_string(i - 1) + ".\"position\"";
-                    filters += " AND o" + idx + ".\"position\" - o" +  std::to_string(i - 1) + ".\"position\" <= " + std::to_string(words[i-1].length() + 32);
+                    filters += " AND o" + idx + ".\"position\" - o" +  std::to_string(i - 1) + ".\"position\" <= " + std::to_string(words[i-1].length() + 8);
                 }
             }
         }
@@ -78,17 +76,22 @@ public:
             if (!chunk || chunk->size() == 0) break;
             for (duckdb::idx_t i = 0; i < chunk->size(); i++) {
                 std::string res_path = chunk->GetValue(0, i).ToString();
-                uint64_t res_pos = chunk->GetValue(1, i).GetValue<uint64_t>();
+                uint64_t res_pos_start = chunk->GetValue(1, i).GetValue<uint64_t>();
+                uint64_t res_pos_end = chunk->GetValue(2, i).GetValue<uint64_t>();
 
 
                 std::ifstream ifs(res_path, std::ios::binary);
                 std::string snippet;
                 if (ifs.is_open()) {
-                    long start_pos = std::max(0L, static_cast<long>(res_pos) - 32L);
+                    long start_pos = std::max(0L, static_cast<long>(res_pos_start) - 32L);
                     ifs.seekg(start_pos);
-                    char buf[128] = {0};
-                    ifs.read(buf, 64 + words[0].length());
-                    std::string raw(buf, ifs.gcount());
+                    
+                    long phrase_span = res_pos_end - res_pos_start + words.back().length();
+                    long fetch_len = std::min(2048L, 64L + phrase_span);
+                    
+                    std::vector<char> buf(fetch_len + 1, 0);
+                    ifs.read(buf.data(), fetch_len);
+                    std::string raw(buf.data(), ifs.gcount());
                     
 
                     for(auto& c : raw) if(c == '\n' || c == '\r') c = ' ';
@@ -96,7 +99,17 @@ public:
                     ifs.close();
                 }
 
-                callback(SearchResult{res_path, snippet});
+                bool proceed = true;
+                if constexpr (std::is_invocable_v<Callback, const SearchResult&>) {
+                    using Ret = std::invoke_result_t<Callback, const SearchResult&>;
+                    if constexpr (std::is_same_v<Ret, bool>) {
+                        proceed = callback(SearchResult{res_path, snippet});
+                    } else {
+                        callback(SearchResult{res_path, snippet});
+                    }
+                }
+                
+                if (!proceed) return true;
             }
         }
 
