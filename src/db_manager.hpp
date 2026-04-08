@@ -68,7 +68,7 @@ namespace idf {
     }
 
 
-    inline void delete_shards(const ShardManager &mgr) {
+    inline void delete_shards(const shard_manager &mgr) {
         std::error_code ec;
         size_t removed = 0;
         for (uint32_t i = 0; i < mgr.num_shards; ++i) {

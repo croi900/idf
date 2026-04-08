@@ -22,7 +22,7 @@ namespace idf {
 
     namespace google_io = google::protobuf::io;
 
-    class ShardManager {
+    class shard_manager {
         struct Shard {
             hpx::mutex mtx;
             int fd;
@@ -46,7 +46,7 @@ namespace idf {
     public:
         std::string prefix;
         size_t num_shards;
-        ShardManager(size_t n, const std::string &prefix) : num_shards(n) {
+        shard_manager(size_t n, const std::string &prefix) : num_shards(n) {
             std::filesystem::create_directories("shards");
             this->prefix = prefix;
             for (size_t i = 0; i < n; ++i) {

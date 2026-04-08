@@ -132,7 +132,7 @@ namespace idf {
         std::cout << "Indexing " << files_to_process.size() << " modified/new files..." << std::endl;
 
         auto start_time = std::chrono::high_resolution_clock::now();
-        idf::ShardManager shard_manager(idf::config::num_shards, "tokens");
+        idf::shard_manager shard_manager(idf::config::num_shards, "tokens");
         fp::start_reporter(start_time, idf::config::chunk_size);
 
         fp::process_file_list(files_to_process, shard_manager);

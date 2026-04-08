@@ -32,7 +32,7 @@
 namespace fp {
 
 
-    inline void process_file_list(const std::vector<dirtree::FileEntry> &fl, idf::ShardManager &shard_manager) {
+    inline void process_file_list(const std::vector<dirtree::FileEntry> &fl, idf::shard_manager &shard_manager) {
 
         namespace sz = ashvardanian::stringzilla;
 
