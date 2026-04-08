@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IDF :: Index Document Finder</title>
+    <style>
+        :root {
+            --bg-dark: #1e1e1e;
+            --bg-panel: #252526;
+            --bg-activity: #333333;
+            --bg-input: #3c3c3c;
+            --text-main: #cccccc;
+            --text-light: #ffffff;
+            --accent: #007acc;
+            --accent-hover: #0098ff;
+            --border: #454545;
+            --error: #f48771;
+            --success: #89d185;
+            --comment: #6a9955;
+            --font-stack: 'SF Mono', Consolas, 'Courier New', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            border-radius: 0 !important; /* Forces strict square corners everywhere */
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: var(--font-stack);
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+            font-size: 14px;
+        }
+
+        /* Activity Bar (Thin Left Sidebar) */
+        .activity-bar {
+            width: 50px;
+            background-color: var(--bg-activity);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding-top: 10px;
+        }
+
+        .activity-icon {
+            width: 100%;
+            padding: 15px 0;
+            text-align: center;
+            cursor: pointer;
+            border-left: 2px solid transparent;
+            transition: all 0.2s ease;
+        }
+
+        .activity-icon.active {
+            border-left-color: var(--text-light);
+        }
+
+        .activity-icon:hover {
+            color: var(--text-light);
+        }
+
+        /* Sidebar (Config & Indexing) */
+        .sidebar {
+            width: 300px;
+            background-color: var(--bg-panel);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar-header {
+            padding: 12px 20px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-main);
+        }
+
+        .sidebar-content {
+            padding: 0 20px 20px 20px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+            color: #999;
+        }
+
+        .form-group input[type="text"],
+        .form-group input[type="number"] {
+            width: 100%;
+            background-color: var(--bg-input);
+            border: 1px solid transparent;
+            color: var(--text-main);
+            padding: 6px 8px;
+            font-family: var(--font-stack);
+            font-size: 13px;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+
+        .form-group input:focus {
+            border-color: var(--accent);
+            background-color: #444;
+        }
+
+        button {
+            width: 100%;
+            background-color: var(--accent);
+            color: var(--text-light);
+            border: none;
+            padding: 8px 0;
+            font-family: inherit;
+            font-size: 13px;
+            cursor: pointer;
+            transition: background-color 0.15s ease, transform 0.05s ease;
+            text-transform: uppercase;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+
+        button:hover {
+            background-color: var(--accent-hover);
+        }
+
+        button:active {
+            transform: scale(0.98);
+        }
+
+        button:disabled {
+            background-color: #555;
+            color: #888;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Progress Reporting */
+        .progress-box {
+            margin-top: 20px;
+            background-color: #1e1e1e;
+            border: 1px solid var(--border);
+            padding: 10px;
+            font-size: 12px;
+        }
+
+        .progress-stat {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        .progress-stat .val { color: var(--text-light); }
+        .progress-stat .lbl { color: var(--comment); }
+
+        .progress-bar-bg {
+            height: 4px;
+            background-color: #333;
+            margin-top: 8px;
+            width: 100%;
+            position: relative;
+            overflow: hidden;
+            display: none;
+        }
+
+        .progress-bar-bg.active {
+            display: block;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            width: 30%;
+            background-color: var(--accent);
+            animation: indeterminate 1.5s infinite linear;
+            position: absolute;
+        }
+
+        @keyframes indeterminate {
+            0% { left: -30%; }
+            100% { left: 100%; }
+        }
+
+        /* Main Workspace */
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background-color: var(--bg-dark);
+        }
+
+        /* Search Header Top Bar */
+        .search-area {
+            padding: 15px 25px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            border-bottom: 1px solid var(--border);
+            background-color: #252526;
+        }
+
+        .search-bar-row {
+            display: flex;
+            gap: 10px;
+            position: relative;
+        }
+
+        .search-input {
+            flex: 1;
+            background-color: var(--bg-input);
+            border: 1px solid var(--border);
+            color: var(--text-light);
+            padding: 10px 15px;
+            font-size: 16px;
+            font-family: inherit;
+            outline: none;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .search-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 1px var(--accent);
+        }
+
+        .search-options {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            font-size: 12px;
+        }
+
+        .radio-lbl {
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            color: #aaa;
+            transition: color 0.15s ease;
+        }
+        
+        .radio-lbl input {
+            accent-color: var(--accent);
+        }
+
+        .radio-lbl:hover {
+            color: var(--text-light);
+        }
+
+        .search-btn {
+            width: 120px;
+            margin-top: 0;
+            padding: 0;
+            font-size: 14px;
+        }
+
+        /* Results Area */
+        .results-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 25px;
+        }
+
+        .result-card {
+            background-color: transparent;
+            margin-bottom: 20px;
+            animation: slideIn 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+            opacity: 0;
+            transform: translateY(10px);
+        }
+
+        @keyframes slideIn {
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .file-path {
+            font-size: 13px;
+            color: #d7ba7d; /* VSCode Yellow */
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+        
+        .file-path:hover {
+            text-decoration: underline;
+        }
+
+        .file-path::before {
+            content: '📄';
+            font-size: 12px;
+        }
+
+        .snippet-box {
+            background-color: #1e1e1e;
+            border: 1px solid var(--border);
+            padding: 12px 16px;
+            color: #cecece;
+            font-size: 13px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            border-left: 3px solid var(--border);
+            transition: border-left-color 0.2s ease;
+        }
+
+        .result-card:hover .snippet-box {
+            border-left-color: var(--accent);
+        }
+
+        mark {
+            background-color: transparent;
+            color: #569cd6; /* VSCode Blue keyword highlight */
+            font-weight: bold;
+            padding: 0;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            font-size: 10px;
+            background-color: #333;
+            color: #888;
+            margin-left: 10px;
+        }
+        .status-badge.indexing {
+            background-color: rgba(244, 135, 113, 0.2);
+            color: var(--error);
+        }
+        .status-badge.ready {
+            background-color: rgba(137, 209, 133, 0.2);
+            color: var(--success);
+        }
+        
+        .empty-state {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #555;
+            font-size: 24px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="activity-bar">
+        <!-- Explorer icon representation -->
+        <div class="activity-icon active">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" opacity="0.8">
+                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"/>
+                <polyline points="13 2 13 9 20 9" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"/>
+            </svg>
+        </div>
+    </div>
+
+    <div class="sidebar">
+        <div class="sidebar-header">
+            EXPLORER: INDEX CONFIG <span id="status-badge" class="status-badge">...</span>
+        </div>
+        <div class="sidebar-content">
+            
+            <div class="form-group">
+                <label>Root Path</label>
+                <input type="text" id="cfg-root" placeholder="/path/to/source">
+            </div>
+
+            <div class="form-group">
+                <label>Num Workers (HPX)</label>
+                <input type="number" id="cfg-workers" placeholder="0">
+            </div>
+
+            <div class="form-group">
+                <label>Chunk Size</label>
+                <input type="number" id="cfg-chunk" placeholder="16384">
+            </div>
+            
+            <div class="form-group">
+                <label>Max Active Chunks</label>
+                <input type="number" id="cfg-maxchunks" placeholder="1000">
+            </div>
+
+            <div class="form-group">
+                <label>Num DB Shards</label>
+                <input type="number" id="cfg-shards" placeholder="32">
+            </div>
+
+            <button id="btn-reindex" onclick="triggerReindex()">Triger Reindex</button>
+
+            <div class="progress-box">
+                <div class="progress-stat">
+                    <span class="lbl">- active chunks</span>
+                    <span class="val" id="stat-active">0</span>
+                </div>
+                <div class="progress-stat">
+                    <span class="lbl">- files processed</span>
+                    <span class="val" id="stat-files">0</span>
+                </div>
+                <div class="progress-stat">
+                    <span class="lbl">- mib processed</span>
+                    <span class="val" id="stat-mib">0.0</span>
+                </div>
+                <div id="progress-bar" class="progress-bar-bg">
+                    <div class="progress-bar-fill"></div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <div class="main">
+        <div class="search-area">
+            <div class="search-options">
+                <label class="radio-lbl">
+                    <input type="radio" name="mode" value="phrase" checked> 
+                    Phrase Search (\p)
+                </label>
+                <label class="radio-lbl">
+                    <input type="radio" name="mode" value="consecutive"> 
+                    Consecutive Strict (\c)
+                </label>
+            </div>
+            <div class="search-bar-row">
+                <input type="text" id="search-input" class="search-input" placeholder="Search tokens... (Press Enter)" onkeypress="handleSearchEnter(event)">
+                <button class="search-btn" onclick="executeSearch()">Find Matches</button>
+            </div>
+        </div>
+        
+        <div class="results-area" id="results-container">
+            <div class="empty-state">No active search</div>
+        </div>
+    </div>
+
+    <script>
+        let isIndexing = false;
+        
+        // Polling interval reference
+        let pollTimer;
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                
+                // Update Status Badge
+                const badge = document.getElementById('status-badge');
+                if (data.indexing) {
+                    badge.textContent = "INDEXING";
+                    badge.className = "status-badge indexing";
+                    document.getElementById('progress-bar').classList.add('active');
+                    document.getElementById('btn-reindex').disabled = true;
+                    document.getElementById('btn-reindex').textContent = "Indexing...";
+                } else {
+                    badge.textContent = "READY";
+                    badge.className = "status-badge ready";
+                    document.getElementById('progress-bar').classList.remove('active');
+                    document.getElementById('btn-reindex').disabled = false;
+                    document.getElementById('btn-reindex').textContent = "Trigger Reindex";
+                }
+
+                // If input fields are not focused, update config values dynamically
+                if (document.activeElement.tagName !== 'INPUT' || document.activeElement.id.startsWith('search')) {
+                    if(data.config) {
+                        if(document.getElementById('cfg-root').value === '' || !isIndexing)
+                            document.getElementById('cfg-root').value = data.config.root_path;
+                        if(document.getElementById('cfg-workers').value === '' || !isIndexing)
+                            document.getElementById('cfg-workers').value = data.config.num_workers;
+                        if(document.getElementById('cfg-chunk').value === '' || !isIndexing)
+                            document.getElementById('cfg-chunk').value = data.config.chunk_size;
+                        if(document.getElementById('cfg-maxchunks').value === '' || !isIndexing)
+                            document.getElementById('cfg-maxchunks').value = data.config.max_active_chunks;
+                        if(document.getElementById('cfg-shards').value === '' || !isIndexing)
+                            document.getElementById('cfg-shards').value = data.config.num_shards;
+                    }
+                }
+
+                // Update Stats
+                document.getElementById('stat-active').textContent = data.active_chunks || 0;
+                document.getElementById('stat-files').textContent = data.files_completed || 0;
+                let mib = ((data.bytes_completed || 0) / (1024*1024)).toFixed(1);
+                document.getElementById('stat-mib').textContent = mib;
+
+                isIndexing = data.indexing;
+            } catch (err) {
+                console.error("Failed to fetch status:", err);
+            }
+        }
+
+        async function triggerReindex() {
+            try {
+                const payload = {
+                    root_path: document.getElementById('cfg-root').value,
+                    num_workers: parseInt(document.getElementById('cfg-workers').value) || 0,
+                    chunk_size: parseInt(document.getElementById('cfg-chunk').value) || 16384,
+                    max_active_chunks: parseInt(document.getElementById('cfg-maxchunks').value) || 2000,
+                    num_shards: parseInt(document.getElementById('cfg-shards').value) || 32
+                };
+
+                const res = await fetch('/api/reindex', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                
+                if (res.ok) {
+                    fetchStatus(); // Immediately jump start poller visually
+                } else {
+                    const err = await res.json();
+                    alert("Reindex Failed: " + err.error);
+                }
+            } catch (err) {
+                alert("Network error triggering reindex.");
+            }
+        }
+
+        function handleSearchEnter(e) {
+            if (e.key === 'Enter') {
+                executeSearch();
+            }
+        }
+
+        async function executeSearch() {
+            const query = document.getElementById('search-input').value.trim();
+            if (!query) return;
+
+            const mode = document.querySelector('input[name="mode"]:checked').value;
+            const container = document.getElementById('results-container');
+            
+            container.innerHTML = `<div style="color: #888; padding: 20px;">Searching...</div>`;
+
+            try {
+                const res = await fetch('/api/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: query, mode: mode })
+                });
+
+                if (res.ok) {
+                    const results = await res.json();
+                    container.innerHTML = ''; // Clear indicator
+
+                    if (results.length === 0) {
+                        container.innerHTML = `<div class="empty-state" style="font-size: 16px;">No Matches Found</div>`;
+                        return;
+                    }
+
+                    results.forEach((match, idx) => {
+                        // Create a card with delay staggered animations natively via inline style overrides
+                        const card = document.createElement('div');
+                        card.className = 'result-card';
+                        card.style.animationDelay = `${idx * 0.03}s`;
+                        
+                        card.innerHTML = `
+                            <div class="file-path">${match.path}</div>
+                            <div class="snippet-box">${match.snippet}</div>
+                        `;
+                        container.appendChild(card);
+                    });
+
+                } else {
+                    container.innerHTML = `<div style="color: var(--error); padding: 20px;">Search Engine Error. Is indexing active?</div>`;
+                }
+            } catch (err) {
+                container.innerHTML = `<div style="color: var(--error); padding: 20px;">API communication failed.</div>`;
+            }
+        }
+
+        // Start polling on boot
+        pollTimer = setInterval(fetchStatus, 500); // Poll twice a second for snappy UI
+        fetchStatus();
+
+    </script>
+</body>
+</html>
