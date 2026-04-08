@@ -3,7 +3,6 @@
 
 #include <vector>
 #include "token_types.hpp"
-#include "simd_tok.h"
 #include <stringzilla/stringzilla.hpp>
 
 namespace idf {
