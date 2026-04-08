@@ -40,7 +40,6 @@ int main(int argc, char *argv[]) {
 
     std::cin >> selection;
     idf::action action = static_cast<idf::action>(selection);
-    idf::cli();
     switch (action) {
         case idf::action::reindex:
             idf::reindex_db();

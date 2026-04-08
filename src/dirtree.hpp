@@ -15,7 +15,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <algorithm>
+#include <set>
 #include "extensions.hpp"
+#include "config.hpp"
 
 namespace dirtree {
     struct linux_dirent64 {
@@ -30,7 +32,11 @@ namespace dirtree {
 
     struct FileEntry {
         std::string name;
+        std::string path;
         size_t size{0};
+        uint64_t mtime{0};
+        uint64_t inode{0};
+        uint64_t dev{0};
     };
 
     struct CompressedDir {
@@ -64,18 +70,20 @@ namespace dirtree {
                     func(d.path + "/" + f.name);
         }
 
-        std::vector<std::string> to_vector() const {
-            std::vector<std::pair<size_t, std::string>> sized_files;
+        std::vector<FileEntry> to_vector() const {
+            std::vector<std::pair<size_t, FileEntry>> sized_files;
             sized_files.reserve(total_files);
             for (const auto& d : dirs)
-                for (const auto& f : d.files)
-                    sized_files.push_back({f.size, d.path + "/" + f.name});
+                for (auto f : d.files) {
+                    f.path = d.path + "/" + f.name;
+                    sized_files.push_back({f.size, f});
+                }
 
 
             hpx::sort(hpx::execution::par, sized_files.begin(), sized_files.end(),
                       [](const auto& a, const auto& b) { return a.first < b.first; });
 
-            std::vector<std::string> result;
+            std::vector<FileEntry> result;
             result.reserve(total_files);
             for (auto& p : sized_files) result.push_back(std::move(p.second));
             return result;
@@ -83,9 +91,14 @@ namespace dirtree {
     };
 
 
-    inline void list_files_serial_internal(const std::string& root_path, FileCollection& local_buffer) {
+    inline void list_files_serial_internal(const std::string& root_path, FileCollection& local_buffer, std::set<std::pair<uint64_t, uint64_t>>& visited) {
         std::vector<std::string> stack;
         stack.push_back(root_path);
+
+        struct stat root_st;
+        if (lstat(root_path.c_str(), &root_st) == 0) {
+            visited.insert({root_st.st_dev, root_st.st_ino});
+        }
 
         std::vector<char> buf(32768);
         std::vector<FileEntry> local_files;
@@ -108,31 +121,26 @@ namespace dirtree {
                     std::string_view name(d->d_name);
 
                     if (name != "." && name != "..") {
-                        if (d->d_type == DT_DIR) {
-                            stack.push_back(path + "/" + std::string(name));
-                        } else if (d->d_type == DT_REG) {
-                            size_t dot_pos = name.find_last_of('.');
-                            if (dot_pos != std::string_view::npos && is_text_file(name.substr(dot_pos))) {
-                                struct stat st;
-                                size_t fsz = 0;
-                                if (fstatat(fd, d->d_name, &st, 0) == 0) fsz = (size_t)st.st_size;
-                                local_files.push_back({std::string(name), fsz});
+                        std::string full_path = path + "/" + std::string(name);
+                        struct stat st;
+                        if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+                            if (S_ISLNK(st.st_mode)) {
+                                if (stat(full_path.c_str(), &st) != 0) goto next_file;
                             }
-                        } else if (d->d_type == DT_UNKNOWN) {
-                            struct stat st;
-                            std::string full_path = path + "/" + std::string(name);
-                            if (lstat(full_path.c_str(), &st) != -1) {
-                                if (S_ISDIR(st.st_mode)) {
-                                    stack.push_back(std::move(full_path));
-                                } else if (S_ISREG(st.st_mode)) {
-                                    size_t dot_pos = name.find_last_of('.');
-                                    if (dot_pos != std::string_view::npos && is_text_file(name.substr(dot_pos))) {
-                                        local_files.push_back({std::string(name), (size_t)st.st_size});
-                                    }
+                            
+                            if (S_ISDIR(st.st_mode)) {
+                                if (visited.insert({st.st_dev, st.st_ino}).second) {
+                                    stack.push_back(full_path);
+                                }
+                            } else if (S_ISREG(st.st_mode)) {
+                                size_t dot_pos = name.find_last_of('.');
+                                if (dot_pos != std::string_view::npos && idf::config::is_allowed_extension(name.substr(dot_pos))) {
+                                    local_files.push_back({std::string(name), "", (size_t)st.st_size, (uint64_t)st.st_mtime, (uint64_t)st.st_ino, (uint64_t)st.st_dev});
                                 }
                             }
                         }
                     }
+                next_file:
                     bpos += d->d_reclen;
                 }
             }
@@ -148,6 +156,7 @@ namespace dirtree {
                                         std::atomic<int>& active_tasks,
                                         int max_tasks,
                                         hpx::promise<void>& completion_promise) {
+        
         int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_CLOEXEC);
         if (fd == -1) {
             if (active_tasks.fetch_sub(1, std::memory_order_acq_rel) == 1)
@@ -168,28 +177,15 @@ namespace dirtree {
                 std::string_view name(d->d_name);
 
                 if (name != "." && name != "..") {
-                    if (d->d_type == DT_DIR) {
-                        subdirs.push_back(path + "/" + std::string(name));
-                    } else if (d->d_type == DT_REG) {
-                        size_t dot_pos = name.find_last_of('.');
-                        if (dot_pos != std::string_view::npos && is_text_file(name.substr(dot_pos))) {
-                            struct stat st;
-                            size_t fsz = 0;
-
-                            if (fstatat(fd, d->d_name, &st, 0) == 0) fsz = (size_t)st.st_size;
-                            local_files.push_back({std::string(name), fsz});
-                        }
-                    } else if (d->d_type == DT_UNKNOWN) {
-                        struct stat st;
-                        std::string full_path = path + "/" + std::string(name);
-                        if (lstat(full_path.c_str(), &st) != -1) {
-                            if (S_ISDIR(st.st_mode)) {
-                                subdirs.push_back(std::move(full_path));
-                            } else if (S_ISREG(st.st_mode)) {
-                                size_t dot_pos = name.find_last_of('.');
-                                if (dot_pos != std::string_view::npos && is_text_file(name.substr(dot_pos))) {
-                                    local_files.push_back({std::string(name), (size_t)st.st_size});
-                                }
+                    std::string full_path = path + "/" + std::string(name);
+                    struct stat st;
+                    if (fstatat(fd, d->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+                        if (S_ISDIR(st.st_mode)) { 
+                            subdirs.push_back(full_path);
+                        } else if (S_ISREG(st.st_mode)) {
+                            size_t dot_pos = name.find_last_of('.');
+                            if (dot_pos != std::string_view::npos && idf::config::is_allowed_extension(name.substr(dot_pos))) {
+                                local_files.push_back({std::string(name), "", (size_t)st.st_size, (uint64_t)st.st_mtime, (uint64_t)st.st_ino, (uint64_t)st.st_dev});
                             }
                         }
                     }
@@ -213,7 +209,8 @@ namespace dirtree {
                                             completion_promise);
                 });
             } else {
-                list_files_serial_internal(subdir, tls_buffers[thread_id]);
+                std::set<std::pair<uint64_t, uint64_t>> local_visited;
+                list_files_serial_internal(subdir, tls_buffers[thread_id], local_visited);
             }
         }
 
@@ -245,7 +242,8 @@ namespace dirtree {
     inline FileCollection file_list_serial(const std::filesystem::path& p) {
         FileCollection result;
         if (!std::filesystem::exists(p)) return result;
-        list_files_serial_internal(p.string(), result);
+        std::set<std::pair<uint64_t, uint64_t>> visited;
+        list_files_serial_internal(p.string(), result, visited);
         return result;
     }
 }

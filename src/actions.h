@@ -8,8 +8,8 @@
 namespace idf {
     enum class action : int {
         reindex = 0,
-        interface = 1,
-        cli = 2
+        cli = 1,
+        interface = 2
     };
 }
 

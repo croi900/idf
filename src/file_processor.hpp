@@ -27,18 +27,17 @@
 #include "src/tokenizer.hpp"
 #include "src/sharding.hpp"
 #include "src/reporter.hpp"
+#include "src/config.hpp"
 
 namespace fp {
-    constexpr size_t CHUNK_SIZE =32 * 1024 * 1024;
-    constexpr size_t MAX_ACTIVE_CHUNKS = 1024;
 
 
-    inline void process_file_list(const std::vector<std::string> &fl, idf::ShardManager &shard_manager) {
+    inline void process_file_list(const std::vector<dirtree::FileEntry> &fl, idf::ShardManager &shard_manager) {
 
         namespace sz = ashvardanian::stringzilla;
 
 
-        hpx::counting_semaphore<MAX_ACTIVE_CHUNKS> semaphore(MAX_ACTIVE_CHUNKS);
+        hpx::counting_semaphore<> semaphore(idf::config::max_active_chunks);
 
 
 
@@ -48,7 +47,7 @@ namespace fp {
             hpx::util::counting_iterator<uint32_t>(0),
             hpx::util::counting_iterator<uint32_t>(fl.size()),
             [&](uint32_t i) {
-                const std::string &path = fl[i];
+                const std::string &path = fl[i].path;
 
                 fast_io::native_file_loader loader(path);
                 if (loader.size() == 0) {
@@ -66,7 +65,7 @@ namespace fp {
                     semaphore.acquire();
                     active_chunks.fetch_add(1, std::memory_order_relaxed);
 
-                    size_t end = std::min(offset + CHUNK_SIZE, total_size);
+                    size_t end = std::min(offset + idf::config::chunk_size, total_size);
 
                     if (end < total_size) {
                         sz::string_view tail(data_ptr + end, total_size - end);
@@ -90,13 +89,14 @@ namespace fp {
                         shard_manager.write_tokens(i,path,tokens);
                         semaphore.release();
                         active_chunks.fetch_sub(1, std::memory_order_relaxed);
+                        bytes_completed.fetch_add(current_chunk_size, std::memory_order_relaxed);
                     });
 
                     offset = end;
                 }
                 files_completed.fetch_add(1, std::memory_order_relaxed);
             });
-
+        
         tg.wait();
 
     }
