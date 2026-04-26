@@ -55,7 +55,7 @@ public:
             if (i > 0) {
                 if (is_phrase_mode) {
                     filters += " AND o" + idx + ".\"position\" > o" + std::to_string(i - 1) + ".\"position\"";
-                    filters += " AND o" + idx + ".\"position\" - o" +  std::to_string(i - 1) + ".\"position\" < 128";
+                    filters += " AND o" + idx + ".\"position\" - o" +  std::to_string(i - 1) + ".\"position\" < 2";
                 } else {
                     filters += " AND o" + idx + ".\"position\" > o" + std::to_string(i - 1) + ".\"position\"";
                     filters += " AND o" + idx + ".\"position\" - o" +  std::to_string(i - 1) + ".\"position\" <= " + std::to_string(words[i-1].length() + 8);

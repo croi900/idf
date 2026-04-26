@@ -27,6 +27,12 @@ protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS
 )
 
 
+find_library(TREE_SITTER_LIB tree-sitter REQUIRED)
+find_library(TREE_SITTER_C_LIB tree-sitter-c REQUIRED)
+set(TREE_SITTER_CPP_LIB /usr/lib/libtree-sitter-cpp.so)
+find_path(TREE_SITTER_INCLUDE tree_sitter/api.h REQUIRED)
+
+
 add_executable(${PROJECT_NAME} 
     main.cpp 
     src/dirtree.hpp 
@@ -42,6 +48,8 @@ add_executable(${PROJECT_NAME}
         src/actions.h
         src/cli.h
         src/gui.h
+        src/parser.h
+        src/parser_queries.h
 )
 
 target_compile_options(${PROJECT_NAME} PRIVATE 
@@ -51,11 +59,11 @@ target_compile_options(${PROJECT_NAME} PRIVATE
 find_package(HPX REQUIRED)
 find_package(PkgConfig REQUIRED)
 find_package(DuckDB CONFIG REQUIRED)
+find_package(absl REQUIRED)
 
 pkg_check_modules(URING REQUIRED liburing)
 pkg_check_modules(JEMALLOC REQUIRED jemalloc)
 
-find_package(absl REQUIRED)
 
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
@@ -70,6 +78,10 @@ target_link_libraries(${PROJECT_NAME}
     absl::flat_hash_map
     absl::hash
     duckdb
+    ${TREE_SITTER_LIB}
+    ${TREE_SITTER_C_LIB}
+    ${TREE_SITTER_CPP_LIB}
+
 )
 
 target_precompile_headers(${PROJECT_NAME} PRIVATE

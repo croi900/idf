@@ -28,7 +28,19 @@
 #include "src/db_manager.hpp"
 #include "src/gui.h"
 #include "src/index.h"
+#include "src/parser.h"
 #include "src/search.h"
+#include <tree_sitter/tree-sitter-c.h>
+
+#include "src/parser_queries.h"
+
+
+
+
+
+/**
+ * Flattens the tree using the internal Tree-sitter IDs
+ */
 
 
 int main(int argc, char *argv[]) {
@@ -53,7 +65,6 @@ int main(int argc, char *argv[]) {
         default:
             break;
     }
-
 
 
 
