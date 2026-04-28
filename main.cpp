@@ -20,53 +20,16 @@
 
 #include "src/actions.h"
 #include "src/cli.h"
-#include "src/gui.h"
 #include "src/dirtree.hpp"
 #include "src/file_processor.hpp"
 #include "src/tokenizer.hpp"
-#include "src/sharding.hpp"
 #include "src/db_manager.hpp"
-#include "src/gui.h"
 #include "src/index.h"
 #include "src/parser.h"
 #include "src/search.h"
-#include <tree_sitter/tree-sitter-c.h>
-
 #include "src/parser_queries.h"
 
-
-
-
-
-/**
- * Flattens the tree using the internal Tree-sitter IDs
- */
-
-
 int main(int argc, char *argv[]) {
-
-    int selection;
-    std::cout << "Please select what you want to do:\n";
-    std::cout << "0: Reindex DB\n";
-    std::cout << "1: CLI\n";
-    std::cout << "2: GUI\n";
-
-    std::cin >> selection;
-    idf::action action = static_cast<idf::action>(selection);
-    switch (action) {
-        case idf::action::reindex:
-            idf::reindex_db();
-            break;
-        case idf::action::cli:
-            idf::cli();
-            break;
-        case idf::action::interface:
-            idf::gui();
-        default:
-            break;
-    }
-
-
-
+    idf::cli();
     return 0;
 }

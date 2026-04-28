@@ -4,300 +4,211 @@
 
 #include <string>
 #include <filesystem>
-#include <fstream>
-#include <iostream>
 #include <cstdint>
-
-#include <google/protobuf/io/coded_stream.h>
-#include <google/protobuf/io/zero_copy_stream_impl.h>
-#include <duckdb.hpp>
-
-#include "tokens_processed.pb.h"
+#include <unordered_map>
+#include <vector>
+#include <cstring>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <queue>
+#include <iostream>
+#include <unordered_map>
+#include <vector>
+#include <cstring>
 #include <absl/hash/hash.h>
 #include <hpx/hpx.hpp>
-#include <hpx/algorithm.hpp>
-#include "sharding.hpp"
+
+#include "lmdb_wrapper.hpp"
 #include "dirtree.hpp"
-#include <map>
 
 namespace idf {
     namespace fs = std::filesystem;
-    namespace gp_io = google::protobuf::io;
 
+    struct file_record {
+        char     path[1024];
+        uint64_t size;
+        uint64_t mtime;
+        uint64_t inode;
+        uint64_t dev;
+        char     lang[16];
+        float    score;
+    };
 
-    inline void serialize_processed_tokens(
-        const im_shard_map &tokens,
-        const std::string &out_path) {
-        idf::TokensProcessed processed;
+    struct text_occurrence {
+        uint64_t file_hash;
+        uint32_t position;
+    };
 
-        uint64_t token_id = 0;
-        for (const auto &[word, occurrences]: tokens) {
-            auto *entry = processed.add_entries();
-            entry->set_token(word);
-            entry->set_id(token_id);
+    struct lang_occurrence {
+        uint64_t file_hash;
+        uint32_t begin;
+        uint32_t end;
+    };
 
-
-            for (const auto &[file_hash, position]: occurrences) {
-                auto *occ = processed.add_occurrences();
-                occ->set_token_id(token_id);
-                occ->set_position(position);
-                occ->set_file_hash(file_hash);
-            }
-
-            ++token_id;
-        }
-
-        uint32_t msg_size = static_cast<uint32_t>(processed.ByteSizeLong());
-
-        int fd = open(out_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd == -1) {
-            std::cerr << "[db_manager] Failed to open " << out_path << " for writing\n";
-            return;
-        }
-        {
-            gp_io::FileOutputStream fos(fd, 256 * 1024);
-            gp_io::CodedOutputStream cos(&fos);
-            cos.WriteVarint32(msg_size);
-            processed.SerializeWithCachedSizes(&cos);
-        }
-        close(fd);
-
-        std::cout << "[db_manager] Wrote " << processed.entries_size() << " token entries"
-                << " and " << processed.occurrences_size() << " occurrences"
-                << " → " << out_path << "\n";
+    inline void init_lmdb_dbs(lmdb_env& env, lmdb_dbi& files_db, lmdb_dbi& text_tokens_db, lmdb_dbi& lang_tokens_db, lmdb_dbi& file_tokens_index) {
+        lmdb_txn txn(env);
+        files_db.open(txn, "files", MDB_CREATE);
+        text_tokens_db.open(txn, "text_tokens", MDB_CREATE | MDB_DUPSORT);
+        lang_tokens_db.open(txn, "lang_tokens", MDB_CREATE | MDB_DUPSORT);
+        file_tokens_index.open(txn, "file_tokens_index", MDB_CREATE | MDB_DUPSORT);
+        txn.commit();
     }
 
-
-    inline void delete_shards(const shard_manager &mgr) {
-        std::error_code ec;
-        size_t removed = 0;
-        for (uint32_t i = 0; i < mgr.num_shards; ++i) {
-            fs::path p = fs::path("shards") / (mgr.prefix + "_" + std::to_string(i) + ".bin");
-            if (fs::remove(p, ec)) { ++removed; }
-        }
-
-        fs::remove("shards", ec);
-        std::cout << "[db_manager] Deleted " << removed << " shard files\n";
-    }
-
-
-    inline std::unordered_map<uint64_t, uint64_t> get_existing_mtimes(duckdb::DuckDB& db, const std::string& prefix) {
-        duckdb::Connection con(db);
+    inline std::unordered_map<uint64_t, uint64_t> get_existing_mtimes(lmdb_env& env, lmdb_dbi& files_db, const std::string& prefix) {
         std::unordered_map<uint64_t, uint64_t> mtimes;
+        lmdb_txn txn(env, MDB_RDONLY);
+        lmdb_cursor cursor(txn, files_db);
         
-        auto res = con.Query("SELECT hash, mtime, path FROM files;");
-        if (res->HasError()) {
-            con.Query("ALTER TABLE files ADD COLUMN mtime UBIGINT DEFAULT 0;");
-            con.Query("ALTER TABLE files ADD COLUMN size UBIGINT DEFAULT 0;");
-            con.Query("ALTER TABLE files ADD COLUMN inode UBIGINT DEFAULT 0;");
-            con.Query("ALTER TABLE files ADD COLUMN dev UBIGINT DEFAULT 0;");
-            res = con.Query("SELECT hash, mtime, path FROM files;");
-            if (res->HasError()) return mtimes;
-        }
-
-        auto& m_res = static_cast<duckdb::MaterializedQueryResult&>(*res);
-        for (duckdb::idx_t i = 0; i < m_res.RowCount(); ++i) {
-            std::string path = m_res.GetValue(2, i).GetValue<std::string>();
-            if (path.rfind(prefix, 0) == 0 || prefix.rfind(path, 0) == 0 || path.front() == '.') {
-                mtimes[m_res.GetValue(0, i).GetValue<uint64_t>()] = m_res.GetValue(1, i).GetValue<uint64_t>();
+        MDB_val key, data;
+        while (cursor.get(key, data, MDB_NEXT)) {
+            if (key.mv_size == sizeof(uint64_t) && data.mv_size == sizeof(file_record)) {
+                uint64_t hash = *static_cast<uint64_t*>(key.mv_data);
+                file_record* rec = static_cast<file_record*>(data.mv_data);
+                
+                std::string path(rec->path);
+                if (path.rfind(prefix, 0) == 0 || prefix.rfind(path, 0) == 0 || path.front() == '.') {
+                    mtimes[hash] = rec->mtime;
+                }
             }
         }
         return mtimes;
     }
 
-    inline void delete_file_records(duckdb::DuckDB &db, const std::vector<uint64_t>& file_hashes) {
+    inline void delete_file_records(lmdb_env& env, lmdb_dbi& files_db, lmdb_dbi& text_tokens_db, lmdb_dbi& lang_tokens_db, lmdb_dbi& file_tokens_index, const std::vector<uint64_t>& file_hashes) {
         if (file_hashes.empty()) return;
-        duckdb::Connection con(db);
         
-        std::string hashes_list = "";
-        for (size_t i = 0; i < file_hashes.size(); ++i) {
-            if (i > 0) hashes_list += ", ";
-            hashes_list += std::to_string(file_hashes[i]);
-        }
+        lmdb_txn txn(env);
         
-        auto res = con.Query("DELETE FROM token_occurrences WHERE file_hash IN (" + hashes_list + ");");
-        if (res->HasError()) std::cerr << "[db_manager] Error deleting token occurrences: " << res->GetError() << "\n";
+        for (uint64_t hash : file_hashes) {
+            MDB_val fh_key{sizeof(uint64_t), &hash};
 
-        res = con.Query("DELETE FROM files WHERE hash IN (" + hashes_list + ");");
-        if (res->HasError()) std::cerr << "[db_manager] Error deleting files: " << res->GetError() << "\n";
-    }
-
-    inline uint64_t get_next_token_id(duckdb::DuckDB &db) {
-        duckdb::Connection con(db);
-        auto res = con.Query("SELECT MAX(id) FROM tokens;");
-        if (!res->HasError()) {
-            auto& m_res = static_cast<duckdb::MaterializedQueryResult&>(*res);
-            if (m_res.RowCount() > 0 && !m_res.GetValue(0, 0).IsNull()) {
-                return m_res.GetValue(0, 0).GetValue<uint64_t>() + 1;
-            }
-        }
-        return 0;
-    }
-
-    inline void load_into_duckdb(
-        duckdb::DuckDB &db,
-        const im_shard_map &tokens,
-        const std::vector<dirtree::FileEntry> &file_list,
-        uint64_t start_token_id = 0) {
-        duckdb::Connection con(db);
-
-        auto run = [&](const std::string &sql) {
-            auto res = con.Query(sql);
-            if (res->HasError()) {
-                std::cerr << "[db_manager] DuckDB error: " << res->GetError() << "\n";
-            }
-        };
-
-
-        run(R"(
-            CREATE TABLE IF NOT EXISTS tokens (
-                id    UBIGINT PRIMARY KEY,
-                token BLOB NOT NULL
-            );
-        )");
-
-        run(R"(
-            CREATE TABLE IF NOT EXISTS token_occurrences (
-                token_id  UBIGINT NOT NULL,
-                position  UBIGINT NOT NULL,
-                file_hash UBIGINT NOT NULL
-            );
-        )");
-
-        run(R"(
-            CREATE TABLE IF NOT EXISTS files (
-                hash UBIGINT PRIMARY KEY,
-                path VARCHAR NOT NULL,
-                size UBIGINT NOT NULL,
-                mtime UBIGINT NOT NULL,
-                inode UBIGINT NOT NULL,
-                dev UBIGINT NOT NULL
-            );
-        )");
-
-
-
-        std::unordered_map<std::string, uint64_t> existing_tokens;
-        auto t_res = con.Query("SELECT id, token FROM tokens;");
-        if (!t_res->HasError()) {
-            auto& mr = static_cast<duckdb::MaterializedQueryResult&>(*t_res);
-            for (duckdb::idx_t i = 0; i < mr.RowCount(); ++i) {
-                auto id = mr.GetValue(0, i).GetValue<uint64_t>();
-                auto word_blob = mr.GetValue(1, i).GetValue<std::string>();
-                existing_tokens[word_blob] = id;
-            }
-        }
-
-
-        std::vector<const std::pair<const std::string, std::vector<std::pair<size_t, size_t>>>*> token_ptrs;
-        token_ptrs.reserve(tokens.size());
-        for (const auto& kv : tokens) {
-            token_ptrs.push_back(&kv);
-        }
-
-        std::atomic<uint64_t> current_token_id{start_token_id};
-
-        size_t chunk_size = 10000;
-        size_t num_chunks = (token_ptrs.size() + chunk_size - 1) / chunk_size;
-
-        if (num_chunks > 0) {
-            hpx::for_each(hpx::execution::par,
-                hpx::util::counting_iterator<size_t>(0),
-                hpx::util::counting_iterator<size_t>(num_chunks),
-                [&](size_t chunk_idx) {
-
-                    duckdb::Connection local_con(db);
-                    duckdb::Appender local_app_tokens(local_con, "tokens");
-                    duckdb::Appender local_app_occ(local_con, "token_occurrences");
-
-                    size_t start = chunk_idx * chunk_size;
-                    size_t end = std::min(start + chunk_size, token_ptrs.size());
-
-                    for (size_t i = start; i < end; ++i) {
-                        const auto& [word, occurrences] = *(token_ptrs[i]);
-                        uint64_t token_id;
-                        
-
-                        auto it = existing_tokens.find(word);
-                        if (it != existing_tokens.end()) {
-                            token_id = it->second;
-                        } else {
-                            token_id = current_token_id.fetch_add(1, std::memory_order_relaxed);
-                            local_app_tokens.BeginRow();
-                            local_app_tokens.Append((uint64_t) token_id);
-                            local_app_tokens.Append(duckdb::Value::BLOB((const uint8_t *) word.data(), word.size()));
-                            local_app_tokens.EndRow();
-                        }
-
-                        for (const auto &[file_hash, position]: occurrences) {
-                            local_app_occ.BeginRow();
-                            local_app_occ.Append((uint64_t) token_id);
-                            local_app_occ.Append((uint64_t) position);
-                            local_app_occ.Append((uint64_t) file_hash);
-                            local_app_occ.EndRow();
-                        }
+            lmdb_cursor idx_cursor(txn, file_tokens_index);
+            MDB_val idx_data;
+            if (idx_cursor.get(fh_key, idx_data, MDB_SET)) {
+                do {
+                    std::string token_str(static_cast<char*>(idx_data.mv_data), idx_data.mv_size);
+                    MDB_val tok_key{idx_data.mv_size, idx_data.mv_data};
+                    
+                    lmdb_cursor tok_cursor(txn, text_tokens_db);
+                    MDB_val tok_data;
+                    if (tok_cursor.get(tok_key, tok_data, MDB_SET)) {
+                        do {
+                            if (tok_data.mv_size >= sizeof(text_occurrence)) {
+                                text_occurrence* occ = static_cast<text_occurrence*>(tok_data.mv_data);
+                                if (occ->file_hash == hash) {
+                                    tok_cursor.del();
+                                }
+                            }
+                        } while (tok_cursor.get(tok_key, tok_data, MDB_NEXT_DUP));
                     }
-
-                    local_app_tokens.Flush();
-                    local_app_tokens.Close();
-                    local_app_occ.Flush();
-                    local_app_occ.Close();
-                });
+                } while (idx_cursor.get(fh_key, idx_data, MDB_NEXT_DUP));
+            }
+            
+            files_db.del(txn, fh_key);
+            file_tokens_index.del(txn, fh_key); // this removes all dups for this hash
         }
-
-        size_t file_chunk_size = 5000;
-        size_t num_file_chunks = (file_list.size() + file_chunk_size - 1) / file_chunk_size;
-        
-        if (num_file_chunks > 0) {
-            hpx::for_each(hpx::execution::par,
-                hpx::util::counting_iterator<size_t>(0),
-                hpx::util::counting_iterator<size_t>(num_file_chunks),
-                [&](size_t chunk_idx) {
-                    duckdb::Connection local_con(db);
-                    duckdb::Appender local_app_files(local_con, "files");
-
-                    size_t start = chunk_idx * file_chunk_size;
-                    size_t end = std::min(start + file_chunk_size, file_list.size());
-
-                    for (size_t i = start; i < end; ++i) {
-                        const auto &entry = file_list[i];
-                        local_app_files.BeginRow();
-                        local_app_files.Append((uint64_t) std::hash<std::string>{}(entry.path));
-                        local_app_files.Append(duckdb::Value(entry.path));
-                        local_app_files.Append((uint64_t) entry.size);
-                        local_app_files.Append((uint64_t) entry.mtime);
-                        local_app_files.Append((uint64_t) entry.inode);
-                        local_app_files.Append((uint64_t) entry.dev);
-                        local_app_files.EndRow();
-                    }
-
-                    local_app_files.Flush();
-                    local_app_files.Close();
-                });
-        }
-
-        run("CREATE INDEX IF NOT EXISTS idx_tokens_token ON tokens(token);");
-        run("CREATE INDEX IF NOT EXISTS idx_occ_token_id ON token_occurrences(token_id);");
-        run("CREATE INDEX IF NOT EXISTS idx_occ_file_hash ON token_occurrences(file_hash);");
-        run("CREATE INDEX IF NOT EXISTS idx_occ_file_tok_pos ON token_occurrences(file_hash, token_id, position);");
-
-
-        auto res = con.Query("SELECT count(*) FROM tokens;");
-        if (!res->HasError()) {
-            auto& m_res = static_cast<duckdb::MaterializedQueryResult&>(*res);
-            std::cout << "[db_manager] tokens rows:            " << m_res.GetValue(0, 0) << "\n";
-        }
-        res = con.Query("SELECT count(*) FROM token_occurrences;");
-        if (!res->HasError()) {
-            auto& m_res = static_cast<duckdb::MaterializedQueryResult&>(*res);
-            std::cout << "[db_manager] token_occurrences rows: " << m_res.GetValue(0, 0) << "\n";
-        }
-        res = con.Query("SELECT count(*) FROM files;");
-        if (!res->HasError()) {
-            auto& m_res = static_cast<duckdb::MaterializedQueryResult&>(*res);
-            std::cout << "[db_manager] files rows:             " << m_res.GetValue(0, 0) << "\n";
-        }
+        txn.commit();
+        std::cout << "[db_manager] Deleted records for " << file_hashes.size() << " files.\n";
     }
-}
+
+    struct parse_batch {
+        dirtree::file_entry file;
+        std::string        lang;
+        float              score = 0.0f;
+        std::vector<std::pair<std::string, text_occurrence>> text_tokens;
+        std::vector<std::pair<std::string, lang_occurrence>> lang_tokens;
+    };
+
+    class lmdb_writer {
+        lmdb_env& env_;
+        lmdb_dbi& files_db_;
+        lmdb_dbi& text_db_;
+        lmdb_dbi& lang_db_;
+        lmdb_dbi& index_db_;
+
+        std::queue<parse_batch> queue_;
+        std::mutex mtx_;
+        std::condition_variable cv_;
+        std::atomic<bool> stop_{false};
+        std::thread worker_;
+
+        void flush_batch(std::vector<parse_batch>& batches) {
+            if (batches.empty()) return;
+            lmdb_txn txn(env_);
+            for (const auto& b : batches) {
+                uint64_t fhash = std::hash<std::string>{}(b.file.path);
+                file_record fr;
+                std::memset(&fr, 0, sizeof(fr));
+                std::strncpy(fr.path, b.file.path.c_str(), sizeof(fr.path) - 1);
+                fr.size  = b.file.size;
+                fr.mtime = b.file.mtime;
+                fr.inode = b.file.inode;
+                fr.dev   = b.file.dev;
+                std::strncpy(fr.lang, b.lang.c_str(), sizeof(fr.lang) - 1);
+                fr.score = b.score;
+
+                MDB_val key_fhash{sizeof(fhash), &fhash};
+                MDB_val data_fr{sizeof(fr), &fr};
+                files_db_.put(txn, key_fhash, data_fr);
+
+                for (const auto& t : b.text_tokens) {
+                    if (t.first.empty() || t.first.size() > 255) continue;
+                    text_db_.put(txn, t.first, std::string_view(reinterpret_cast<const char*>(&t.second), sizeof(text_occurrence)));
+                    index_db_.put(txn, key_fhash, MDB_val{t.first.size(), const_cast<char*>(t.first.data())});
+                }
+                for (const auto& l : b.lang_tokens) {
+                    if (l.first.empty() || l.first.size() > 255) continue;
+                    lang_db_.put(txn, l.first, std::string_view(reinterpret_cast<const char*>(&l.second), sizeof(lang_occurrence)));
+                }
+            }
+            txn.commit();
+        }
+
+        void run() {
+            std::vector<parse_batch> local_batch;
+            while (true) {
+                {
+                    std::unique_lock<std::mutex> lock(mtx_);
+                    cv_.wait(lock, [this] { return !queue_.empty() || stop_; });
+                    
+                    if (stop_ && queue_.empty()) break;
+
+                    while (!queue_.empty() && local_batch.size() < 1000) {
+                        local_batch.push_back(std::move(queue_.front()));
+                        queue_.pop();
+                    }
+                }
+                flush_batch(local_batch);
+                local_batch.clear();
+            }
+        }
+
+    public:
+        lmdb_writer(lmdb_env& env, lmdb_dbi& files, lmdb_dbi& texts, lmdb_dbi& langs, lmdb_dbi& index)
+            : env_(env), files_db_(files), text_db_(texts), lang_db_(langs), index_db_(index) {
+            worker_ = std::thread(&lmdb_writer::run, this);
+        }
+
+        ~lmdb_writer() {
+            {
+                std::lock_guard<std::mutex> lock(mtx_);
+                stop_ = true;
+            }
+            cv_.notify_one();
+            if (worker_.joinable()) worker_.join();
+        }
+
+        void push(parse_batch&& batch) {
+            {
+                std::lock_guard<std::mutex> lock(mtx_);
+                queue_.push(std::move(batch));
+            }
+            cv_.notify_one();
+        }
+    };
+
+} // namespace idf
 
 #endif

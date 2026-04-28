@@ -7,6 +7,10 @@
 #include <hpx/hpx.hpp>
 #include "src/extensions.hpp"
 
+namespace idf {
+    enum class rank_strategy { Score, Alphabetical, DateModified };
+}
+
 namespace idf::config {
     inline size_t num_workers = 0;
     inline size_t chunk_size = 32 * 1024 * 1024;
@@ -14,6 +18,8 @@ namespace idf::config {
     inline std::vector<std::string> allowed_extensions(dirtree::text_extensions.begin(), dirtree::text_extensions.end());
     inline size_t num_shards = 256;
     inline std::string root_path = ".";
+    inline bool enable_substring_search = false;
+    inline idf::rank_strategy current_rank_strategy = idf::rank_strategy::Score;
 
     inline bool is_allowed_extension(const std::string_view& ext) {
         if (allowed_extensions.empty()) return true;

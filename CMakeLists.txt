@@ -20,16 +20,29 @@ endif()
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Protobuf REQUIRED)
-protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS
-    tokens.proto
-    tokens_processed.proto
-)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LMDB REQUIRED lmdb)
+
+include(FetchContent)
+FetchContent_Declare(ftxui
+  GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI
+  GIT_TAG main
+)
+FetchContent_MakeAvailable(ftxui)
 
 find_library(TREE_SITTER_LIB tree-sitter REQUIRED)
+find_library(TREE_SITTER_BASH_LIB tree-sitter-bash REQUIRED)
 find_library(TREE_SITTER_C_LIB tree-sitter-c REQUIRED)
-set(TREE_SITTER_CPP_LIB /usr/lib/libtree-sitter-cpp.so)
+find_library(TREE_SITTER_CPP_LIB tree-sitter-cpp REQUIRED)
+find_library(TREE_SITTER_JAVASCRIPT_LIB tree-sitter-javascript REQUIRED)
+find_library(TREE_SITTER_LUA_LIB tree-sitter-lua REQUIRED)
+find_library(TREE_SITTER_MARKDOWN_LIB tree-sitter-markdown REQUIRED)
+find_library(TREE_SITTER_PYTHON_LIB tree-sitter-python REQUIRED)
+find_library(TREE_SITTER_QUERY_LIB tree-sitter-query REQUIRED)
+find_library(TREE_SITTER_RUST_LIB tree-sitter-rust REQUIRED)
+find_library(TREE_SITTER_VIM_LIB tree-sitter-vim REQUIRED)
+find_library(TREE_SITTER_VIMDOC_LIB tree-sitter-vimdoc REQUIRED)
 find_path(TREE_SITTER_INCLUDE tree_sitter/api.h REQUIRED)
 
 
@@ -38,18 +51,16 @@ add_executable(${PROJECT_NAME}
     src/dirtree.hpp 
     src/extensions.hpp
     src/tokenizer.hpp
-    src/sharding.hpp
     src/db_manager.hpp
-    ${PROTO_SRCS}
-    ${PROTO_HDRS}
     src/file_processor.hpp
     src/search.h
-        src/index.h
-        src/actions.h
-        src/cli.h
-        src/gui.h
-        src/parser.h
-        src/parser_queries.h
+    src/index.h
+    src/actions.h
+    src/cli.h
+    src/parser.h
+    src/parser_queries.h
+    src/query_parser.h
+    src/history.hpp
 )
 
 target_compile_options(${PROJECT_NAME} PRIVATE 
@@ -57,8 +68,6 @@ target_compile_options(${PROJECT_NAME} PRIVATE
 )
 
 find_package(HPX REQUIRED)
-find_package(PkgConfig REQUIRED)
-find_package(DuckDB CONFIG REQUIRED)
 find_package(absl REQUIRED)
 
 pkg_check_modules(URING REQUIRED liburing)
@@ -72,16 +81,26 @@ target_link_libraries(${PROJECT_NAME}
     HPX::iostreams_component
     ${URING_LIBRARIES}
     ${JEMALLOC_LIBRARIES}
-    protobuf::libprotobuf
+    ${LMDB_LIBRARIES}
     absl::log_internal_check_op
     absl::log_internal_message
     absl::flat_hash_map
     absl::hash
-    duckdb
     ${TREE_SITTER_LIB}
+    ${TREE_SITTER_BASH_LIB}
     ${TREE_SITTER_C_LIB}
     ${TREE_SITTER_CPP_LIB}
-
+    ${TREE_SITTER_JAVASCRIPT_LIB}
+    ${TREE_SITTER_LUA_LIB}
+    ${TREE_SITTER_MARKDOWN_LIB}
+    ${TREE_SITTER_PYTHON_LIB}
+    ${TREE_SITTER_QUERY_LIB}
+    ${TREE_SITTER_RUST_LIB}
+    ${TREE_SITTER_VIM_LIB}
+    ${TREE_SITTER_VIMDOC_LIB}
+    ftxui::screen
+    ftxui::dom
+    ftxui::component
 )
 
 target_precompile_headers(${PROJECT_NAME} PRIVATE
@@ -91,9 +110,6 @@ target_precompile_headers(${PROJECT_NAME} PRIVATE
     <filesystem>
     <iostream>
     <liburing.h>
-    <google/protobuf/io/coded_stream.h>
-    <google/protobuf/io/zero_copy_stream_impl.h>
-    <google/protobuf/arena.h>
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE 
@@ -101,6 +117,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}
     ${URING_INCLUDE_DIRS}
     ${JEMALLOC_INCLUDE_DIRS}
+    ${LMDB_INCLUDE_DIRS}
 )
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD

@@ -1,76 +1,284 @@
-//
-// Created by croi on 08.04.2026.
-//
-
 #ifndef IDF_CLI_H
 #define IDF_CLI_H
-#include <iostream>
-#include <duckdb/main/connection.hpp>
-#include <duckdb/main/database.hpp>
 
+#include <iostream>
+#include <string>
+#include <vector>
+#include <thread>
+#include <atomic>
 #include <algorithm>
-#include "search.h"
+#include <mutex>
+
+#include <ftxui/component/component.hpp>
+#include <ftxui/component/screen_interactive.hpp>
+#include <ftxui/dom/elements.hpp>
+#include <ftxui/screen/color.hpp>
+
+#include "src/search.h"
+#include "src/config.hpp"
+#include "src/index.h"
+#include "src/db_manager.hpp"
+#include "src/query_parser.h"
+#include "src/history.hpp"
 
 namespace idf {
-    inline void cli() {
-        duckdb::DuckDB db("idf.duckdb");
-        std::cout << "Type \\q to exit, \\p for phrase search, \\c for consecutive search.\n";
-        bool is_phrase = true;
-        
-        while (true) {
-            std::string query;
-            std::cout << (is_phrase ? "[Phrase]" : "[Consecutive]") << " Q> ";
-            std::getline(std::cin, query);
 
-            if (query == "\\q") return;
-            if (query == "\\p") { is_phrase = true; continue; }
-            if (query == "\\c") { is_phrase = false; continue; }
-            if (query.empty()) continue;
+    inline ftxui::Element highlight_line(const std::string& line, const idf::qp::compiled_query& cq) {
+        using namespace ftxui;
+        if (cq.highlight_words.empty()) return text(line) | color(Color::GrayLight);
 
-            std::vector<std::string> words;
-            std::stringstream ss(query);
-            std::string w;
-            while (ss >> w) words.push_back(w);
-
-            duckdb::Connection con(db);
-
-            try {
-                idf::search::Query q(std::move(con), query, is_phrase);
-                size_t count = 0;
-                q.execute([&](const idf::search::SearchResult& res) {
-                    if (++count > 100) return false;
-                    std::string snip = res.snippet;
-                    std::vector<std::pair<size_t, size_t>> intervals;
-                    for (const auto& wd : words) {
-                        size_t pos = 0;
-                        while ((pos = snip.find(wd, pos)) != std::string::npos) {
-                            intervals.push_back({pos, pos + wd.length()});
-                            pos += wd.length();
-                        }
-                    }
-                    if (!intervals.empty()) {
-                        std::sort(intervals.begin(), intervals.end());
-                        std::vector<std::pair<size_t, size_t>> merged;
-                        for (auto& iv : intervals) {
-                            if (merged.empty() || merged.back().second < iv.first) {
-                                merged.push_back(iv);
-                            } else {
-                                merged.back().second = std::max(merged.back().second, iv.second);
-                            }
-                        }
-                        for (auto it = merged.rbegin(); it != merged.rend(); ++it) {
-                            snip.insert(it->second, "\x1b[0m");
-                            snip.insert(it->first, "\x1b[32m");
-                        }
-                    }
-                    
-                    std::cout << "\x1b[36m" << res.path << "\x1b[0m\n" << snip << "\n\n";
-                    return true;
-                });
-            } catch (const std::exception& e) {
-                std::cerr << "Error: " << e.what() << std::endl;
+        std::vector<std::pair<size_t, size_t>> intervals;
+        for (const auto& w : cq.highlight_words) {
+            if (w.empty()) continue;
+            size_t pos = 0;
+            while ((pos = line.find(w, pos)) != std::string::npos) {
+                intervals.push_back({pos, pos + w.size()});
+                pos += w.size();
             }
         }
+        if (intervals.empty()) return text(line) | color(Color::GrayLight);
+
+        std::sort(intervals.begin(), intervals.end());
+        std::vector<std::pair<size_t, size_t>> merged;
+        for (auto& iv : intervals) {
+            if (merged.empty() || merged.back().second < iv.first) merged.push_back(iv);
+            else merged.back().second = std::max(merged.back().second, iv.second);
+        }
+
+        Elements parts;
+        size_t pos = 0;
+        for (const auto& [lo, hi] : merged) {
+            if (lo > pos) parts.push_back(text(line.substr(pos, lo - pos)) | color(Color::GrayLight));
+            parts.push_back(text(line.substr(lo, hi - lo)) | color(Color::Yellow) | bold);
+            pos = hi;
+        }
+        if (pos < line.size()) parts.push_back(text(line.substr(pos)) | color(Color::GrayLight));
+        return hbox(std::move(parts));
+    }
+
+    inline ftxui::Element highlight_snippet(const std::string& snippet, const idf::qp::compiled_query& cq) {
+        using namespace ftxui;
+        Elements lines;
+        std::istringstream ss(snippet);
+        std::string line;
+        while (std::getline(ss, line)) {
+            lines.push_back(highlight_line(line, cq));
+        }
+        return vbox(std::move(lines));
+    }
+
+    inline void cli() {
+        auto screen = ftxui::ScreenInteractive::Fullscreen();
+
+        std::string query_text  = "";
+        std::string root_path   = idf::config::root_path;
+        bool substring_search   = idf::config::enable_substring_search;
+        bool is_phrase          = true;
+        int  rank_selected      = 0;
+
+        idf::history::history_store hist_store;
+        try { hist_store.open("idf_history"); } catch (...) {}
+        idf::history::search_observer hist_observer(hist_store);
+
+        struct result_entry {
+            std::string path;
+            std::string snippet;
+        };
+
+        std::vector<result_entry>   results;
+        std::vector<std::string>    result_labels;
+        int                         selected_result = 0;
+        std::atomic<bool>           is_searching(false);
+        std::atomic<bool>           is_indexing(false);
+        std::mutex                  results_mtx;
+
+        auto run_search = [&] {
+            if (is_searching) return;
+            is_searching = true;
+            {
+                std::lock_guard<std::mutex> lock(results_mtx);
+                results.clear();
+                result_labels.clear();
+            }
+            idf::config::enable_substring_search = substring_search;
+            switch (rank_selected) {
+                case 1:  idf::config::current_rank_strategy = idf::rank_strategy::Alphabetical; break;
+                case 2:  idf::config::current_rank_strategy = idf::rank_strategy::DateModified; break;
+                default: idf::config::current_rank_strategy = idf::rank_strategy::Score;        break;
+            }
+
+            std::thread([&] {
+                try {
+                    idf::lmdb_env env;
+                    env.open("idf_db", 0, 0664);
+                    idf::lmdb_dbi files_db, text_db, lang_db, index_db;
+                    idf::init_lmdb_dbs(env, files_db, text_db, lang_db, index_db);
+
+                    idf::search::query q(env, files_db, text_db, lang_db, query_text, is_phrase);
+                    if (hist_store.is_open()) q.set_observer(&hist_observer);
+
+                    size_t count = 0;
+                    q.execute([&](const idf::search::search_result& res) {
+                        if (!res.snippet.empty() && ++count <= 100) {
+                            std::lock_guard<std::mutex> lock(results_mtx);
+                            results.push_back({res.path, res.snippet});
+                            result_labels.push_back(res.path);
+                            return true;
+                        }
+                        return count <= 100;
+                    });
+                } catch (const std::exception& e) {
+                    std::lock_guard<std::mutex> lock(results_mtx);
+                    results.push_back({"Error", std::string(e.what())});
+                    result_labels.push_back("Error");
+                }
+                if (results.empty()) {
+                    results.push_back({"", "No matches found."});
+                    result_labels.push_back("No matches found.");
+                }
+                is_searching = false;
+                selected_result = 0;
+                screen.PostEvent(ftxui::Event::Custom);
+            }).detach();
+        };
+
+        auto input_opts = ftxui::InputOption();
+        input_opts.on_enter = run_search;
+        ftxui::Component q_input = ftxui::Input(&query_text, "path:src/ lang:cpp def:execute content:foo", input_opts);
+
+        ftxui::Component btn_search  = ftxui::Button(" SEARCH ",   run_search, ftxui::ButtonOption::Animated(ftxui::Color::Green));
+        ftxui::Component path_input  = ftxui::Input(&root_path,    "Workspace Root");
+
+        ftxui::Component btn_reindex = ftxui::Button(" REINDEX ", [&] {
+            if (is_indexing) return;
+            is_indexing = true;
+            idf::config::root_path                = root_path;
+            idf::config::enable_substring_search  = substring_search;
+            std::thread([&] {
+                try { idf::reindex_db(); } catch (...) {}
+                is_indexing = false;
+                screen.PostEvent(ftxui::Event::Custom);
+            }).detach();
+        }, ftxui::ButtonOption::Animated(ftxui::Color::Yellow));
+
+        auto phrase_chk = ftxui::Checkbox("PHRASE",    &is_phrase);
+        auto sub_chk    = ftxui::Checkbox("SUBSTRING", &substring_search);
+
+        std::vector<std::string> rank_labels = {"SCORE", "ALPHA", "DATE"};
+        auto rank_rad = ftxui::Radiobox(&rank_labels, &rank_selected);
+
+        auto result_list = ftxui::Menu(&result_labels, &selected_result);
+
+        auto container = ftxui::Container::Vertical({
+            ftxui::Container::Horizontal({ q_input, btn_search }),
+            ftxui::Container::Horizontal({ path_input, phrase_chk, sub_chk, rank_rad, btn_reindex }),
+            result_list
+        });
+
+        std::vector<std::string> known_types;
+        auto update_known_types = [&] {
+            try {
+                idf::lmdb_env env;
+                env.open("idf_db", 0, 0664);
+                idf::lmdb_dbi files_db, text_db, lang_db, index_db;
+                idf::init_lmdb_dbs(env, files_db, text_db, lang_db, index_db);
+                idf::lmdb_txn txn(env, MDB_RDONLY);
+                idf::lmdb_cursor cursor(txn, lang_db);
+                MDB_val key, data;
+                known_types.clear();
+                if (cursor.get(key, data, MDB_FIRST)) {
+                    do {
+                        known_types.emplace_back(static_cast<const char*>(key.mv_data), key.mv_size);
+                    } while (cursor.get(key, data, MDB_NEXT_NODUP));
+                }
+            } catch (...) {}
+        };
+        update_known_types();
+
+        static const std::vector<std::string> semantic_prefixes = {
+            "def:", "ref:", "call:", "import:", "comment:", "symbol:",
+        };
+
+        auto renderer = ftxui::Renderer(container, [&] {
+            using namespace ftxui;
+
+            auto cq = idf::qp::compile(query_text, is_phrase);
+
+            Elements sugs;
+            if (query_text.size() >= 2) {
+                auto recent = hist_store.recent(10);
+                for (const auto& h : recent) {
+                    if (h != query_text && h.find(query_text) == 0)
+                        sugs.push_back(text(h) | color(Color::Blue) | border | dim);
+                }
+            }
+            size_t tp_idx = query_text.rfind("type:");
+            if (tp_idx != std::string::npos) {
+                std::string partial = query_text.substr(tp_idx + 5);
+                for (const auto& t : known_types) {
+                    if (t.find(partial) == 0)
+                        sugs.push_back(text(t) | color(Color::Green) | border);
+                    if (sugs.size() >= 10) break;
+                }
+            }
+
+            Element suggestions_box = sugs.empty() ? text("") : hbox({ text(" SUGGEST: ") | dim, hbox(std::move(sugs)) });
+
+            Element results_display = text(" No results. ") | dim;
+            {
+                std::lock_guard<std::mutex> lock(results_mtx);
+                if (!results.empty()) {
+                    if (selected_result < 0) selected_result = 0;
+                    if (selected_result >= (int)results.size()) selected_result = results.size() - 1;
+                    
+                    const auto& r = results[selected_result];
+                    results_display = vbox({
+                        text(r.path) | color(Color::Cyan) | bold,
+                        separator(),
+                        highlight_snippet(r.snippet, cq)
+                    }) | flex;
+                }
+            }
+
+            return vbox({
+                hbox({
+                    text(" IDF ") | bold | bgcolor(Color::Cyan) | color(Color::Black),
+                    text(" indexer ") | dim,
+                    filler(),
+                    text(is_indexing ? " INDEXING DB... " : is_searching ? " SEARCHING... " : " READY ") 
+                        | bold | color(is_indexing ? Color::Yellow : is_searching ? Color::Green : Color::GrayDark)
+                }),
+                separator(),
+                hbox({
+                    text(" QUERY: ") | bold | color(Color::Green),
+                    q_input->Render() | flex,
+                    btn_search->Render()
+                }),
+                suggestions_box,
+                separator(),
+                hbox({
+                    text(" PATH: ") | dim,
+                    path_input->Render() | size(WIDTH, LESS_THAN, 40),
+                    separator(),
+                    phrase_chk->Render(),
+                    separator(),
+                    sub_chk->Render(),
+                    separator(),
+                    text(" SORT: ") | dim,
+                    rank_rad->Render(),
+                    filler(),
+                    btn_reindex->Render()
+                }),
+                separator(),
+                hbox({
+                    result_list->Render() | size(WIDTH, EQUAL, 40) | vscroll_indicator | frame | border,
+                    results_display | border | flex
+                }) | flex
+            }) | border;
+        });
+
+        screen.Loop(renderer);
     }
 }
-#endif //IDF_CLI_H
+
+#endif

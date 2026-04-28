@@ -8,8 +8,17 @@
 #include <memory>
 #include <tree_sitter/api.h>
 
+extern "C" const TSLanguage* tree_sitter_bash();
 extern "C" const TSLanguage* tree_sitter_c();
 extern "C" const TSLanguage* tree_sitter_cpp();
+extern "C" const TSLanguage* tree_sitter_javascript();
+extern "C" const TSLanguage* tree_sitter_lua();
+extern "C" const TSLanguage* tree_sitter_markdown();
+extern "C" const TSLanguage* tree_sitter_python();
+extern "C" const TSLanguage* tree_sitter_query();
+extern "C" const TSLanguage* tree_sitter_rust();
+extern "C" const TSLanguage* tree_sitter_vim();
+extern "C" const TSLanguage* tree_sitter_vimdoc();
 
 
 
@@ -92,7 +101,8 @@ namespace idf::parser {
         }
 
         std::string_view symbol_name(uint32_t id) {
-            return global_symbol_map[id];
+            if (id < global_symbol_map.size()) return global_symbol_map[id];
+            return "ERROR";
         }
 
     private:
@@ -111,6 +121,20 @@ namespace idf::parser {
         }
 
         parser_ptr parser_obj;
+    };
+
+
+    class parser_pool {
+    public:
+        static parser& get_instance(const TSLanguage* lang) {
+            static thread_local std::map<const TSLanguage*, idf::parser::parser> local_parsers;
+
+            auto it = local_parsers.find(lang);
+            if (it == local_parsers.end()) {
+                it = local_parsers.emplace(lang, idf::parser::parser(lang)).first;
+            }
+            return it->second;
+        }
     };
 }
 

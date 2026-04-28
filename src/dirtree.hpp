@@ -30,7 +30,7 @@ namespace dirtree {
 
 
 
-    struct FileEntry {
+    struct file_entry {
         std::string name;
         std::string path;
         size_t size{0};
@@ -39,17 +39,17 @@ namespace dirtree {
         uint64_t dev{0};
     };
 
-    struct CompressedDir {
+    struct compressed_dir {
         std::string path;
-        std::vector<FileEntry> files;
+        std::vector<file_entry> files;
     };
 
-    class FileCollection {
-        std::deque<CompressedDir> dirs;
+    class file_collection {
+        std::deque<compressed_dir> dirs;
         size_t total_files = 0;
 
     public:
-        void add_dir(const std::string& path, std::vector<FileEntry>&& files_in_dir) {
+        void add_dir(const std::string& path, std::vector<file_entry>&& files_in_dir) {
             if (!files_in_dir.empty()) {
                 total_files += files_in_dir.size();
                 dirs.push_back({path, std::move(files_in_dir)});
@@ -58,7 +58,7 @@ namespace dirtree {
 
         size_t size() const { return total_files; }
 
-        void merge(FileCollection&& other) {
+        void merge(file_collection&& other) {
             for (auto& d : other.dirs) dirs.push_back(std::move(d));
             total_files += other.total_files;
         }
@@ -70,8 +70,8 @@ namespace dirtree {
                     func(d.path + "/" + f.name);
         }
 
-        std::vector<FileEntry> to_vector() const {
-            std::vector<std::pair<size_t, FileEntry>> sized_files;
+        std::vector<file_entry> to_vector() const {
+            std::vector<std::pair<size_t, file_entry>> sized_files;
             sized_files.reserve(total_files);
             for (const auto& d : dirs)
                 for (auto f : d.files) {
@@ -83,7 +83,7 @@ namespace dirtree {
             hpx::sort(hpx::execution::par, sized_files.begin(), sized_files.end(),
                       [](const auto& a, const auto& b) { return a.first < b.first; });
 
-            std::vector<FileEntry> result;
+            std::vector<file_entry> result;
             result.reserve(total_files);
             for (auto& p : sized_files) result.push_back(std::move(p.second));
             return result;
@@ -91,7 +91,7 @@ namespace dirtree {
     };
 
 
-    inline void list_files_serial_internal(const std::string& root_path, FileCollection& local_buffer, std::set<std::pair<uint64_t, uint64_t>>& visited) {
+    inline void list_files_serial_internal(const std::string& root_path, file_collection& local_buffer, std::set<std::pair<uint64_t, uint64_t>>& visited) {
         std::vector<std::string> stack;
         stack.push_back(root_path);
 
@@ -101,7 +101,7 @@ namespace dirtree {
         }
 
         std::vector<char> buf(32768);
-        std::vector<FileEntry> local_files;
+        std::vector<file_entry> local_files;
 
         while (!stack.empty()) {
             std::string path = std::move(stack.back());
@@ -152,7 +152,7 @@ namespace dirtree {
 
 
     inline void list_files_hpx_internal(std::string path,
-                                        std::vector<FileCollection>& tls_buffers,
+                                        std::vector<file_collection>& tls_buffers,
                                         std::atomic<int>& active_tasks,
                                         int max_tasks,
                                         hpx::promise<void>& completion_promise) {
@@ -166,7 +166,7 @@ namespace dirtree {
 
         std::vector<char> buf(32768);
         std::vector<std::string> subdirs;
-        std::vector<FileEntry> local_files;
+        std::vector<file_entry> local_files;
 
         while (true) {
             int nread = syscall(SYS_getdents64, fd, buf.data(), buf.size());
@@ -219,11 +219,11 @@ namespace dirtree {
     }
 
 
-    inline FileCollection file_list(const std::filesystem::path& p, const int max_tasks = 2000) {
+    inline file_collection file_list(const std::filesystem::path& p, const int max_tasks = 2000) {
         std::string start_path = p.string();
         if (!std::filesystem::exists(p)) return {};
 
-        std::vector<FileCollection> tls_buffers(hpx::get_os_thread_count());
+        std::vector<file_collection> tls_buffers(hpx::get_os_thread_count());
         std::atomic<int> active_tasks(1);
         hpx::promise<void> completion_promise;
         auto f = completion_promise.get_future();
@@ -234,13 +234,13 @@ namespace dirtree {
 
         f.get();
 
-        FileCollection result;
+        file_collection result;
         for (auto& buf : tls_buffers) result.merge(std::move(buf));
         return result;
     }
 
-    inline FileCollection file_list_serial(const std::filesystem::path& p) {
-        FileCollection result;
+    inline file_collection file_list_serial(const std::filesystem::path& p) {
+        file_collection result;
         if (!std::filesystem::exists(p)) return result;
         std::set<std::pair<uint64_t, uint64_t>> visited;
         list_files_serial_internal(p.string(), result, visited);
