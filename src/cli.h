@@ -8,6 +8,8 @@
 #include <atomic>
 #include <algorithm>
 #include <mutex>
+#include <iomanip>
+#include <sstream>
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
@@ -91,6 +93,7 @@ namespace idf {
         std::atomic<bool>           is_searching(false);
         std::atomic<bool>           is_indexing(false);
         std::mutex                  results_mtx;
+        auto                        indexing_start_time = std::chrono::high_resolution_clock::now();
 
         auto run_search = [&] {
             if (is_searching) return;
@@ -115,17 +118,18 @@ namespace idf {
                     idf::init_lmdb_dbs(env, files_db, text_db, lang_db, index_db);
 
                     idf::search::query q(env, files_db, text_db, lang_db, query_text, is_phrase);
-                    if (hist_store.is_open()) q.set_observer(&hist_observer);
+                    if (hist_store.is_open()) {
+                        q.set_observer(&hist_observer);
+                        q.set_history_store(&hist_store);
+                    }
 
-                    size_t count = 0;
                     q.execute([&](const idf::search::search_result& res) {
-                        if (!res.snippet.empty() && ++count <= 100) {
+                        if (!res.snippet.empty()) {
                             std::lock_guard<std::mutex> lock(results_mtx);
                             results.push_back({res.path, res.snippet});
                             result_labels.push_back(res.path);
-                            return true;
                         }
-                        return count <= 100;
+                        return true;
                     });
                 } catch (const std::exception& e) {
                     std::lock_guard<std::mutex> lock(results_mtx);
@@ -152,8 +156,18 @@ namespace idf {
         ftxui::Component btn_reindex = ftxui::Button(" REINDEX ", [&] {
             if (is_indexing) return;
             is_indexing = true;
+            fp::reset_stats();
+            indexing_start_time = std::chrono::high_resolution_clock::now();
             idf::config::root_path                = root_path;
             idf::config::enable_substring_search  = substring_search;
+            
+            std::thread([&] {
+                while (is_indexing) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    screen.PostEvent(ftxui::Event::Custom);
+                }
+            }).detach();
+
             std::thread([&] {
                 try { idf::reindex_db(); } catch (...) {}
                 is_indexing = false;
@@ -206,30 +220,32 @@ namespace idf {
 
             Elements sugs;
             if (query_text.size() >= 2) {
-                auto recent = hist_store.recent(10);
+                auto recent = hist_store.suggest(query_text, 5);
                 for (const auto& h : recent) {
-                    if (h != query_text && h.find(query_text) == 0)
-                        sugs.push_back(text(h) | color(Color::Blue) | border | dim);
+                    sugs.push_back(text(h) | color(Color::Blue) | border | dim);
                 }
             }
             size_t tp_idx = query_text.rfind("type:");
             if (tp_idx != std::string::npos) {
                 std::string partial = query_text.substr(tp_idx + 5);
+                size_t added_types = 0;
                 for (const auto& t : known_types) {
-                    if (t.find(partial) == 0)
+                    if (t.find(partial) == 0) {
                         sugs.push_back(text(t) | color(Color::Green) | border);
-                    if (sugs.size() >= 10) break;
+                        added_types++;
+                    }
+                    if (added_types >= 5) break;
                 }
             }
 
-            Element suggestions_box = sugs.empty() ? text("") : hbox({ text(" SUGGEST: ") | dim, hbox(std::move(sugs)) });
+            Element suggestions_box = sugs.empty() ? text("") : hbox({ text(" SUGGEST: ") | dim, hflow(std::move(sugs)) });
 
             Element results_display = text(" No results. ") | dim;
             {
                 std::lock_guard<std::mutex> lock(results_mtx);
                 if (!results.empty()) {
                     if (selected_result < 0) selected_result = 0;
-                    if (selected_result >= (int)results.size()) selected_result = results.size() - 1;
+                    if (selected_result >= (int)results.size()) selected_result = (int)results.size() - 1;
                     
                     const auto& r = results[selected_result];
                     results_display = vbox({
@@ -238,6 +254,28 @@ namespace idf {
                         highlight_snippet(r.snippet, cq)
                     }) | flex;
                 }
+            }
+
+            Element indexing_status = text("");
+            if (is_indexing) {
+                auto now = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> elapsed = now - indexing_start_time;
+                size_t current_bytes = fp::bytes_completed.load();
+                size_t current_files = fp::files_completed.load();
+                double mib_total = current_bytes / (1024.0 * 1024.0);
+                double mib_s = elapsed.count() > 0 ? (mib_total / elapsed.count()) : 0;
+
+                std::stringstream ss;
+                ss << std::fixed << std::setprecision(1) << mib_s << " MiB/s";
+
+                indexing_status = hbox({
+                    text(" PROGRESS: ") | bold | color(Color::Yellow),
+                    text(std::to_string(current_files) + " files") | color(Color::Cyan),
+                    separator(),
+                    text(ss.str()) | color(Color::Green),
+                    separator(),
+                    text("Total: " + std::to_string((int)mib_total) + " MiB") | dim
+                }) | border | color(Color::Yellow);
             }
 
             return vbox({
@@ -273,7 +311,8 @@ namespace idf {
                 hbox({
                     result_list->Render() | size(WIDTH, EQUAL, 40) | vscroll_indicator | frame | border,
                     results_display | border | flex
-                }) | flex
+                }) | flex,
+                indexing_status
             }) | border;
         });
 

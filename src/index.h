@@ -46,13 +46,9 @@ namespace idf {
             idf::config::num_workers = hpx::get_os_thread_count();
         }
 
-        std::cout << "HPX Worker Threads: " << idf::config::num_workers << "\n";
-
         idf::config::root_path = std::filesystem::absolute(idf::config::root_path).lexically_normal().string();
 
         global_fl = dirtree::file_list(idf::config::root_path, 16000).to_vector();
-
-        std::cout << "Found " << global_fl.size() << " files." << std::endl;
 
         std::filesystem::create_directories("idf_db");
         idf::lmdb_env env;
@@ -80,31 +76,25 @@ namespace idf {
             }
         }
         
-
         for (const auto& [hash, mtime] : existing_mtimes) {
             hashes_to_delete.push_back(hash);
         }
 
         if (!hashes_to_delete.empty()) {
-            std::cout << "Removing old records for " << hashes_to_delete.size() << " files...\n";
             idf::delete_file_records(env, files_db, text_db, lang_db, index_db, hashes_to_delete);
         }
 
         if (files_to_process.empty()) {
-            std::cout << "Index is up to date. " << global_fl.size() << " files untouched.\n";
             return;
         }
 
-        std::cout << "Indexing " << files_to_process.size() << " modified/new files..." << std::endl;
-
         auto start_time = std::chrono::high_resolution_clock::now();
         
-        fp::start_reporter(start_time, idf::config::chunk_size);
+        fp::reset_stats();
 
         {
             idf::lmdb_writer writer(env, files_db, text_db, lang_db, index_db);
             fp::process_file_list(files_to_process, writer);
-            // Destructor of lmdb_writer ensures everything flushes
         }
         
         fp::done = true;
@@ -112,7 +102,6 @@ namespace idf {
         auto end_time = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> elapsed = end_time - start_time;
         double tokenize_time = elapsed.count();
-        std::cout << "Finished " << fp::files_completed.load() << " files in " << tokenize_time << "s" << std::endl;
 
 
         std::ofstream report("report_" + std::to_string(unix_time) + ".txt");

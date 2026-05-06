@@ -35,6 +35,7 @@ namespace dirtree {
         std::string path;
         size_t size{0};
         uint64_t mtime{0};
+        uint64_t atime{0};
         uint64_t inode{0};
         uint64_t dev{0};
     };
@@ -135,7 +136,7 @@ namespace dirtree {
                             } else if (S_ISREG(st.st_mode)) {
                                 size_t dot_pos = name.find_last_of('.');
                                 if (dot_pos != std::string_view::npos && idf::config::is_allowed_extension(name.substr(dot_pos))) {
-                                    local_files.push_back({std::string(name), "", (size_t)st.st_size, (uint64_t)st.st_mtime, (uint64_t)st.st_ino, (uint64_t)st.st_dev});
+                                    local_files.push_back({std::string(name), "", (size_t)st.st_size, (uint64_t)st.st_mtime, (uint64_t)st.st_atime, (uint64_t)st.st_ino, (uint64_t)st.st_dev});
                                 }
                             }
                         }
@@ -185,7 +186,7 @@ namespace dirtree {
                         } else if (S_ISREG(st.st_mode)) {
                             size_t dot_pos = name.find_last_of('.');
                             if (dot_pos != std::string_view::npos && idf::config::is_allowed_extension(name.substr(dot_pos))) {
-                                local_files.push_back({std::string(name), "", (size_t)st.st_size, (uint64_t)st.st_mtime, (uint64_t)st.st_ino, (uint64_t)st.st_dev});
+                                local_files.push_back({std::string(name), "", (size_t)st.st_size, (uint64_t)st.st_mtime, (uint64_t)st.st_atime, (uint64_t)st.st_ino, (uint64_t)st.st_dev});
                             }
                         }
                     }

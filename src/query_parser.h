@@ -14,6 +14,7 @@
 #include "src/config.hpp"
 #include "src/db_manager.hpp"
 #include "src/dirtree.hpp"
+#include "src/parser.h"
 
 namespace idf::qp {
 
@@ -33,9 +34,15 @@ struct compiled_query {
     bool        is_phrase = true;
     std::string raw;
 
-    bool passes(const std::string& path, const idf::file_record& rec, const std::string& snip) const {
-        for (const auto& f : path_filters)   if (!f(path))      return false;
-        for (const auto& f : record_filters) if (!f(rec))        return false;
+    bool passes_path(const std::string& path) const {
+        for (const auto& f : path_filters) if (!f(path)) return false;
+        return true;
+    }
+    bool passes_record(const idf::file_record& rec) const {
+        for (const auto& f : record_filters) if (!f(rec)) return false;
+        return true;
+    }
+    bool passes_result(const std::string& path, const std::string& snip) const {
         for (const auto& f : result_filters) if (!f(path, snip)) return false;
         return true;
     }
@@ -48,26 +55,37 @@ inline compiled_query compile(const std::string& raw, bool is_phrase = true) {
     cq.raw       = raw;
     cq.is_phrase = is_phrase;
 
-    static const std::vector<std::string> def_node_types = {
-        "function_definition", "function_declaration",
-        "class_declaration", "class_specifier",
-        "struct_specifier", "enum_specifier",
-        "variable_declaration", "declaration",
-        "method_definition", "decorated_definition",
-    };
+    static std::vector<std::string> def_node_types;
+    static std::vector<std::string> ref_node_types;
+    static std::vector<std::string> call_node_types;
+    static std::vector<std::string> import_node_types;
 
-    static const std::vector<std::string> ref_node_types = {
-        "identifier", "field_identifier", "type_identifier",
-    };
-
-    static const std::vector<std::string> call_node_types = {
-        "call_expression", "function_call", "call",
-    };
-
-    static const std::vector<std::string> import_node_types = {
-        "preproc_include", "import_statement", "import_from_statement",
-        "use_declaration",
-    };
+    static bool initialized = false;
+    if (!initialized) {
+        auto all_nodes = idf::parser::get_all_ts_node_names();
+        for (const auto& node : all_nodes) {
+            if (node.find("def") != std::string::npos || 
+                node.find("decl") != std::string::npos ||
+                node.find("class") != std::string::npos ||
+                node.find("struct") != std::string::npos ||
+                node.find("enum") != std::string::npos) {
+                def_node_types.push_back(node);
+            }
+            if (node.find("ident") != std::string::npos || 
+                node.find("type_ident") != std::string::npos) {
+                ref_node_types.push_back(node);
+            }
+            if (node.find("call") != std::string::npos) {
+                call_node_types.push_back(node);
+            }
+            if (node.find("import") != std::string::npos || 
+                node.find("include") != std::string::npos ||
+                node.find("use") != std::string::npos) {
+                import_node_types.push_back(node);
+            }
+        }
+        initialized = true;
+    }
 
     static const std::unordered_map<std::string, std::vector<std::string>> lang_extensions = {
         {"cpp",    {".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h"}},
@@ -223,14 +241,16 @@ inline float score_path(const dirtree::file_entry& f, const std::string& lang) {
         size_score = std::max(0.0f, size_score);
     }
 
-    return (depth_score * 0.35f + ext_score * 0.35f + size_score * 0.15f) * test_penalty;
+    float path_len_score = std::max(0.0f, 1.0f - static_cast<float>(p.length()) / 200.0f);
+
+    return (path_len_score * 0.5f + depth_score * 0.2f + ext_score * 0.2f + size_score * 0.1f) * test_penalty;
 }
 
 struct scored_result {
     std::string path;
     std::string snippet;
     float       score;
-    uint64_t    mtime;
+    uint64_t    atime;
 };
 
 inline auto make_comparator(idf::rank_strategy s)
@@ -243,7 +263,7 @@ inline auto make_comparator(idf::rank_strategy s)
             };
         case idf::rank_strategy::DateModified:
             return [](const scored_result& a, const scored_result& b) {
-                return a.mtime > b.mtime;
+                return a.atime > b.atime;
             };
         case idf::rank_strategy::Score:
         default:

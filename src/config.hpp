@@ -20,6 +20,9 @@ namespace idf::config {
     inline std::string root_path = ".";
     inline bool enable_substring_search = false;
     inline idf::rank_strategy current_rank_strategy = idf::rank_strategy::Score;
+    inline size_t io_batch_size = 1000;
+    inline size_t max_ts_file_bytes = 512 * 1024;
+    inline size_t max_ts_nodes_per_file = 200'000;
 
     inline bool is_allowed_extension(const std::string_view& ext) {
         if (allowed_extensions.empty()) return true;

@@ -40,6 +40,7 @@ public:
     bool        is_phrase_mode;
 
     idf::history::search_observer* observer = nullptr;
+    idf::history::history_store* hist_store = nullptr;
 
     query(idf::lmdb_env& env, idf::lmdb_dbi& files_db, idf::lmdb_dbi& text_db, idf::lmdb_dbi& lang_db,
           const std::string& query_text, bool is_phrase = true)
@@ -47,12 +48,27 @@ public:
           query_text(query_text), is_phrase_mode(is_phrase) {}
 
     void set_observer(idf::history::search_observer* obs) { observer = obs; }
+    void set_history_store(idf::history::history_store* hs) { hist_store = hs; }
 
 private:
     template<typename Callback>
     bool drain_sorted(std::vector<idf::qp::scored_result>& results, Callback& callback) {
+        if (hist_store) {
+            for (auto& r : results) {
+                float bonus = hist_store->get_path_bonus(r.path);
+                r.score = r.score * 0.9f + bonus * 0.1f;
+            }
+        }
+        
         auto cmp = idf::qp::make_comparator(idf::config::current_rank_strategy);
         std::sort(results.begin(), results.end(), cmp);
+        
+        std::vector<std::string> top_paths;
+        for (size_t i = 0; i < std::min<size_t>(20, results.size()); ++i) {
+            top_paths.push_back(results[i].path);
+        }
+        if (observer) observer->on_query_executed(query_text, top_paths);
+
         for (const auto& r : results) {
             bool proceed = true;
             if constexpr (std::is_same_v<std::invoke_result_t<Callback, const search_result&>, bool>) {
@@ -97,11 +113,9 @@ private:
 
         std::mutex                          collect_mtx;
         std::vector<idf::qp::scored_result>  collected;
-        std::atomic<bool>                   limit_reached(false);
         namespace sz = ashvardanian::stringzilla;
 
         hpx::for_each(hpx::execution::par, file_hashes.begin(), file_hashes.end(), [&](uint64_t fhash) {
-            if (limit_reached) return;
 
             idf::lmdb_txn local_txn(env, MDB_RDONLY);
             MDB_val file_key{sizeof(fhash), (void*)&fhash};
@@ -110,6 +124,8 @@ private:
 
             idf::file_record* rec = static_cast<idf::file_record*>(file_data.mv_data);
             std::string res_path(rec->path);
+            
+            if (!cq.passes_path(res_path) || !cq.passes_record(*rec)) return;
 
             std::ifstream ifs(res_path, std::ios::binary);
             if (!ifs.is_open()) return;
@@ -124,7 +140,6 @@ private:
             sz::string_view content_view(content);
 
             for (const auto& occ : file_map[fhash]) {
-                if (limit_reached) return;
                 if (occ.begin >= file_size || occ.end > file_size || occ.end < occ.begin) continue;
 
                 sz::string_view node_view = content_view.substr(occ.begin, occ.end - occ.begin);
@@ -146,12 +161,10 @@ private:
                     std::string snippet = content.substr(snip_begin, snip_end - snip_begin);
                     snippet = "... " + snippet + " ...";
 
-                    if (!cq.passes(res_path, *rec, snippet)) continue;
+                    if (!cq.passes_result(res_path, snippet)) continue;
 
                     std::lock_guard<std::mutex> lock(collect_mtx);
-                    if (limit_reached) return;
-                    collected.push_back({res_path, snippet, rec->score, rec->mtime});
-                    if (collected.size() >= 150) limit_reached = true;
+                    collected.push_back({res_path, snippet, rec->score, rec->atime});
                 }
             }
         });
@@ -211,7 +224,6 @@ private:
         std::vector<idf::qp::scored_result> collected;
 
         for (const auto& o0 : word_occs[0]) {
-            if (collected.size() >= 150) break;
             uint64_t current_file = o0.file_hash;
             uint32_t current_pos  = o0.position;
             bool     matchedAll   = true;
@@ -243,6 +255,8 @@ private:
                     idf::file_record* rec = static_cast<idf::file_record*>(file_data.mv_data);
                     std::string res_path(rec->path);
 
+                    if (!cq.passes_path(res_path) || !cq.passes_record(*rec)) continue;
+
                     std::ifstream ifs(res_path, std::ios::binary);
                     std::string snippet;
                     if (ifs.is_open()) {
@@ -257,8 +271,8 @@ private:
                         ifs.close();
                     }
 
-                    if (!cq.passes(res_path, *rec, snippet)) continue;
-                    collected.push_back({res_path, snippet, rec->score, rec->mtime});
+                    if (!cq.passes_result(res_path, snippet)) continue;
+                    collected.push_back({res_path, snippet, rec->score, rec->atime});
                 }
             }
         }
@@ -279,7 +293,6 @@ public:
             ok = execute_text_only(txn, cq, callback);
         }
 
-        if (observer) observer->on_query_executed(query_text);
         return ok;
     }
 };
