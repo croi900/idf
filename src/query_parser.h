@@ -33,6 +33,7 @@ struct compiled_query {
 
     bool        is_phrase = true;
     std::string raw;
+    std::string color_filter;
 
     bool passes_path(const std::string& path) const {
         for (const auto& f : path_filters) if (!f(path)) return false;
@@ -203,6 +204,17 @@ inline compiled_query compile(const std::string& raw, bool is_phrase = true) {
                     return snip.find(v) != std::string::npos;
                 });
             }
+
+        } else if (qualifier == "color") {
+            std::string v = value;
+            for (char& c : v) {
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            }
+            cq.color_filter = v;
+            cq.highlight_words.push_back(v);
+            cq.record_filters.push_back([v](const idf::file_record& rec) {
+                return std::strncmp(rec.dominant_color, v.c_str(), sizeof(rec.dominant_color)) == 0;
+            });
 
         } else {
             cq.content_words.push_back(token);

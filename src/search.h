@@ -280,6 +280,50 @@ private:
         return drain_sorted(collected, callback);
     }
 
+    template<typename Callback>
+    bool execute_color_only(const idf::qp::compiled_query& cq, Callback callback) {
+        std::string token = "color:" + cq.color_filter;
+        std::vector<idf::text_occurrence> occs;
+
+        {
+            idf::lmdb_txn txn(env, MDB_RDONLY);
+            idf::lmdb_cursor cursor(txn, text_db);
+            MDB_val key{token.size(), const_cast<char*>(token.data())};
+            MDB_val data;
+            if (cursor.get(key, data, MDB_SET)) {
+                do {
+                    if (data.mv_size >= sizeof(idf::text_occurrence))
+                        occs.push_back(*static_cast<idf::text_occurrence*>(data.mv_data));
+                } while (cursor.get(key, data, MDB_NEXT_DUP));
+            }
+        }
+
+        if (occs.empty()) return true;
+
+        std::vector<idf::qp::scored_result> collected;
+        idf::lmdb_txn txn(env, MDB_RDONLY);
+
+        for (const auto& occ : occs) {
+            uint64_t fhash = occ.file_hash;
+            MDB_val file_key{sizeof(fhash), &fhash};
+            MDB_val file_data;
+            if (!files_db.get(txn, file_key, file_data) || file_data.mv_size < sizeof(idf::file_record))
+                continue;
+
+            idf::file_record* rec = static_cast<idf::file_record*>(file_data.mv_data);
+            std::string res_path(rec->path);
+            if (!cq.passes_path(res_path) || !cq.passes_record(*rec)) continue;
+
+            std::string snippet = "[image] dominant color: ";
+            snippet += rec->dominant_color;
+            if (!cq.passes_result(res_path, snippet)) continue;
+
+            collected.push_back({res_path, snippet, rec->score, rec->atime});
+        }
+
+        return drain_sorted(collected, callback);
+    }
+
 public:
     template<typename Callback>
     bool execute(Callback callback) {
@@ -288,6 +332,8 @@ public:
         bool ok;
         if (!cq.type_prefixes.empty()) {
             ok = execute_structural(cq, callback);
+        } else if (!cq.color_filter.empty() && cq.content_words.empty()) {
+            ok = execute_color_only(cq, callback);
         } else {
             idf::lmdb_txn txn(env, MDB_RDONLY);
             ok = execute_text_only(txn, cq, callback);

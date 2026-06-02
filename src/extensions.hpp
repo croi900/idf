@@ -127,6 +127,19 @@ namespace dirtree {
 
         return std::binary_search(text_extensions.begin(), text_extensions.end(), ext);
     }
+
+    inline constexpr std::array image_extensions = {
+        std::string_view{".bmp"},
+        std::string_view{".gif"},
+        std::string_view{".jpeg"},
+        std::string_view{".jpg"},
+        std::string_view{".png"},
+        std::string_view{".webp"},
+    };
+
+    [[nodiscard]] constexpr bool is_image_file(std::string_view ext) noexcept {
+        return std::binary_search(image_extensions.begin(), image_extensions.end(), ext);
+    }
 }
 
 #endif

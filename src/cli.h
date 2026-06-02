@@ -148,7 +148,7 @@ namespace idf {
 
         auto input_opts = ftxui::InputOption();
         input_opts.on_enter = run_search;
-        ftxui::Component q_input = ftxui::Input(&query_text, "path:src/ lang:cpp def:execute content:foo", input_opts);
+        ftxui::Component q_input = ftxui::Input(&query_text, "path:src/ lang:cpp color:red content:foo", input_opts);
 
         ftxui::Component btn_search  = ftxui::Button(" SEARCH ",   run_search, ftxui::ButtonOption::Animated(ftxui::Color::Green));
         ftxui::Component path_input  = ftxui::Input(&root_path,    "Workspace Root");

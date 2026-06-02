@@ -35,6 +35,7 @@ namespace idf {
         uint64_t dev;
         char     lang[16];
         float    score;
+        char     dominant_color[16];
     };
 
     struct text_occurrence {
@@ -64,7 +65,7 @@ namespace idf {
         
         MDB_val key, data;
         while (cursor.get(key, data, MDB_NEXT)) {
-            if (key.mv_size == sizeof(uint64_t) && data.mv_size >= 1076) {
+            if (key.mv_size == sizeof(uint64_t) && data.mv_size >= sizeof(file_record)) {
                 uint64_t hash = *static_cast<uint64_t*>(key.mv_data);
                 file_record* rec = static_cast<file_record*>(data.mv_data);
                 
@@ -120,6 +121,7 @@ namespace idf {
         float              score = 0.0f;
         std::vector<std::pair<std::string, text_occurrence>> text_tokens;
         std::vector<std::pair<std::string, lang_occurrence>> lang_tokens;
+        std::string                                        dominant_color;
     };
 
     class lmdb_writer {
@@ -150,6 +152,8 @@ namespace idf {
                 fr.dev   = b.file.dev;
                 std::strncpy(fr.lang, b.lang.c_str(), sizeof(fr.lang) - 1);
                 fr.score = b.score;
+                if (!b.dominant_color.empty())
+                    std::strncpy(fr.dominant_color, b.dominant_color.c_str(), sizeof(fr.dominant_color) - 1);
 
                 MDB_val key_fhash{sizeof(fhash), &fhash};
                 MDB_val data_fr{sizeof(fr), &fr};

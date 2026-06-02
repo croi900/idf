@@ -61,6 +61,7 @@ add_executable(${PROJECT_NAME}
     src/parser_queries.h
     src/query_parser.h
     src/history.hpp
+    src/image_processor.hpp
 )
 
 target_compile_options(${PROJECT_NAME} PRIVATE 

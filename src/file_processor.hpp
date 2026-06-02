@@ -28,6 +28,7 @@
 #include "src/db_manager.hpp"
 #include "src/parser.h"
 #include "src/query_parser.h"
+#include "src/image_processor.hpp"
 
 
 namespace fp {
@@ -109,9 +110,13 @@ namespace fp {
             loaded_file lf;
             lf.entry   = fe;
             lf.data    = std::move(buf);
-            lf.lang    = lang_string_for_extension(ext);
+            if (dirtree::is_image_file(ext)) {
+                lf.lang = "image";
+            } else {
+                lf.lang = lang_string_for_extension(ext);
+            }
             lf.hash    = std::hash<std::string>{}(path);
-            lf.ts_lang = (lf.data.size() <= idf::config::max_ts_file_bytes)
+            lf.ts_lang = (!dirtree::is_image_file(ext) && lf.data.size() <= idf::config::max_ts_file_bytes)
                              ? get_language_for_extension(ext) : nullptr;
             out.push_back(std::move(lf));
         }
@@ -128,30 +133,40 @@ namespace fp {
             hpx::execution::par,
             batch.begin(), batch.end(),
             [&](loaded_file& lf) {
-                std::string_view sv(lf.data.data(), lf.data.size());
-
+                std::string ext = std::filesystem::path(lf.entry.path).extension().string();
                 idf::parse_batch pb;
-                pb.file  = lf.entry;
-                pb.lang  = lf.lang;
-                pb.score = idf::qp::score_path(lf.entry, lf.lang);
 
-                auto tokens = idf::tokenize_chunk(sv, 0);
-                pb.text_tokens.reserve(tokens.size());
-                for (const auto& t : tokens)
-                    pb.text_tokens.emplace_back(std::string(t.word),
-                        idf::text_occurrence{lf.hash, static_cast<uint32_t>(t.pos)});
+                if (dirtree::is_image_file(ext)) {
+                    std::span<const std::uint8_t> bytes(
+                        reinterpret_cast<const std::uint8_t*>(lf.data.data()),
+                        lf.data.size());
+                    std::string color = idf::image::to_lower(
+                        idf::image::dominant_color_name(bytes));
+                    pb = idf::image::make_image_batch(lf.entry, lf.hash, color);
+                } else {
+                    std::string_view sv(lf.data.data(), lf.data.size());
+                    pb.file  = lf.entry;
+                    pb.lang  = lf.lang;
+                    pb.score = idf::qp::score_path(lf.entry, lf.lang);
 
-                if (lf.ts_lang) {
-                    auto& ts_p = idf::parser::parser_pool::get_instance(lf.ts_lang);
-                    auto  tree = ts_p.parse(sv);
-                    if (tree) {
-                        thread_local std::vector<idf::parser::symbol_info> flat;
-                        ts_p.flatten_tree_dfs(flat);
-                        pb.lang_tokens.reserve(flat.size());
-                        for (const auto& sym : flat) {
-                            std::string_view node_type = ts_p.symbol_name(sym.type);
-                            pb.lang_tokens.emplace_back(std::string(node_type),
-                                idf::lang_occurrence{lf.hash, sym.start_byte, sym.end_byte});
+                    auto tokens = idf::tokenize_chunk(sv, 0);
+                    pb.text_tokens.reserve(tokens.size());
+                    for (const auto& t : tokens)
+                        pb.text_tokens.emplace_back(std::string(t.word),
+                            idf::text_occurrence{lf.hash, static_cast<uint32_t>(t.pos)});
+
+                    if (lf.ts_lang) {
+                        auto& ts_p = idf::parser::parser_pool::get_instance(lf.ts_lang);
+                        auto  tree = ts_p.parse(sv);
+                        if (tree) {
+                            thread_local std::vector<idf::parser::symbol_info> flat;
+                            ts_p.flatten_tree_dfs(flat);
+                            pb.lang_tokens.reserve(flat.size());
+                            for (const auto& sym : flat) {
+                                std::string_view node_type = ts_p.symbol_name(sym.type);
+                                pb.lang_tokens.emplace_back(std::string(node_type),
+                                    idf::lang_occurrence{lf.hash, sym.start_byte, sym.end_byte});
+                            }
                         }
                     }
                 }

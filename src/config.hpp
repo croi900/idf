@@ -15,7 +15,11 @@ namespace idf::config {
     inline size_t num_workers = 0;
     inline size_t chunk_size = 32 * 1024 * 1024;
     inline size_t max_active_chunks = 1024;
-    inline std::vector<std::string> allowed_extensions(dirtree::text_extensions.begin(), dirtree::text_extensions.end());
+    inline std::vector<std::string> allowed_extensions = [] {
+        std::vector<std::string> exts(dirtree::text_extensions.begin(), dirtree::text_extensions.end());
+        for (auto e : dirtree::image_extensions) exts.emplace_back(e);
+        return exts;
+    }();
     inline size_t num_shards = 256;
     inline std::string root_path = ".";
     inline bool enable_substring_search = false;
